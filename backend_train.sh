@@ -1,0 +1,1 @@
+nohup python train_ot_rcfm_vp.py  > vp.log 2>&1 &
