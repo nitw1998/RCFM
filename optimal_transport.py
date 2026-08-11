@@ -6,6 +6,7 @@ from typing import Optional, Union
 import numpy as np
 import ot as pot
 import torch
+from scipy.optimize import linear_sum_assignment
 
 
 class OTPlanSampler:
@@ -59,8 +60,9 @@ class OTPlanSampler:
         self.reg_m = reg_m
         self.normalize_cost = normalize_cost
         self.warn = warn
+        self.method = method
 
-    def get_map(self, x0, x1):
+    def get_map(self, x0, x1, strict=False, return_diagnostics=False):
         """Compute the OT plan (wrt squared Euclidean cost) between a source and a target
         minibatch.
 
@@ -83,20 +85,52 @@ class OTPlanSampler:
             x1 = x1.reshape(x1.shape[0], -1)
         M = torch.cdist(x0, x1) ** 2
         if self.normalize_cost:
-            M = M / M.max()  # should not be normalized when using minibatches
-        p = self.ot_fn(a, b, M.detach().cpu().numpy())
-        if not np.all(np.isfinite(p)):
-            print("ERROR: p is not finite")
-            print(p)
-            print("Cost mean, max", M.mean(), M.max())
-            print(x0, x1)
-        if np.abs(p.sum()) < 1e-8:
+            maximum = M.max()
+            if torch.isfinite(maximum) and maximum > 0:
+                M = M / maximum
+        with warnings.catch_warnings(record=True) as caught_warnings:
+            warnings.simplefilter("always")
+            p = np.asarray(self.ot_fn(a, b, M.detach().cpu().numpy()), dtype=np.float64)
+
+        diagnostics = {
+            "method": self.method,
+            "regularization": float(self.reg),
+            "cost_normalized": bool(self.normalize_cost),
+            "cost_matrix": M.detach().cpu().numpy().astype(np.float64, copy=False),
+            "intended_source_marginal": np.asarray(a, dtype=np.float64),
+            "intended_target_marginal": np.asarray(b, dtype=np.float64),
+            "fallback_count": 0,
+            "nonfinite_plan_count": int(not np.all(np.isfinite(p))),
+            "solver_warning_count": len(caught_warnings),
+        }
+        invalid_reason = None
+        if p.shape != (len(a), len(b)):
+            invalid_reason = f"unexpected plan shape {p.shape}"
+        elif not np.all(np.isfinite(p)):
+            invalid_reason = "nonfinite OT plan"
+        elif np.any(p < -1e-12):
+            invalid_reason = "negative OT plan probability"
+        elif not np.isfinite(p.sum()) or np.abs(p.sum()) < 1e-8:
+            invalid_reason = "zero-mass OT plan"
+
+        if invalid_reason is not None:
+            if strict:
+                raise FloatingPointError(invalid_reason)
+            diagnostics["fallback_count"] = 1
             if self.warn:
-                warnings.warn("Numerical errors in OT plan, reverting to uniform plan.")
-            p = np.ones_like(p) / p.size
+                warnings.warn(f"{invalid_reason}; reverting to a uniform plan.")
+            p = np.ones((len(a), len(b)), dtype=np.float64) / (len(a) * len(b))
+        elif np.any(p < 0):
+            p = np.clip(p, 0.0, None)
+
+        if self.warn:
+            for warning in caught_warnings:
+                warnings.warn(str(warning.message), warning.category)
+        if return_diagnostics:
+            return p, diagnostics
         return p
 
-    def sample_map(self, pi, batch_size, replace=True):
+    def sample_map(self, pi, batch_size, replace=True, strategy="multinomial"):
         r"""Draw source and target samples from pi  $(x,z) \sim \pi$
 
         Parameters
@@ -113,7 +147,17 @@ class OTPlanSampler:
         (i_s, i_j) : tuple of numpy arrays, shape (bs, bs)
             represents the indices of source and target data samples from $\pi$
         """
+        pi = np.asarray(pi, dtype=np.float64)
+        if strategy == "assignment":
+            if pi.shape[0] != pi.shape[1] or batch_size != pi.shape[0]:
+                raise ValueError("assignment sampling requires a square plan and one sample per row")
+            source_indices, target_indices = linear_sum_assignment(-pi)
+            return source_indices.astype(np.int64), target_indices.astype(np.int64)
+        if strategy != "multinomial":
+            raise ValueError("strategy must be multinomial or assignment")
         p = pi.flatten()
+        if not np.all(np.isfinite(p)) or p.sum() <= 0:
+            raise FloatingPointError("cannot sample a nonfinite or zero-mass OT plan")
         p = p / p.sum()
         choices = np.random.choice(
             pi.shape[0] * pi.shape[1], p=p, size=batch_size, replace=replace

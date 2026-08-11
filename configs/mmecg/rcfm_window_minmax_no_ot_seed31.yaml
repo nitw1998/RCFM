@@ -1,0 +1,23 @@
+{
+  "task": "rcg2ecg", "datasets": "mmECG",
+  "dataset_version": "mmecg-public-20221108-subject-split-window-minmax-v1",
+  "split_hash": "e26fc81121cfd3b0e457608e37a7aa496ac7c48a0e0e7583a465bd069cc9da9f",
+  "normalization_id": "window_minmax_neg1_1_v1",
+  "condition_unit": "source_amplitude_unit_unverified", "target_unit": "source_amplitude_unit_unverified",
+  "alignment_id": "same_record_same_window_no_additional_phase_correction_subject_split_v1",
+  "condition_lead": "energy_weighted_RCG", "target_lead": "single_channel_ECG",
+  "window_size": 4, "epochs": 500, "batch_size": 128, "num_workers": 2,
+  "lr": 0.0001, "weight_decay": 0.0001, "warmup_epochs": 2,
+  "save_every": 25, "checkpoint_policy": "full", "attention_heads": 8,
+  "flow_matcher": "conditional", "sigma": 0.0, "region_weight": 0.01,
+  "use_minibatch_ot": false, "ot_method": "exact", "ot_reg": 0.05,
+  "ot_normalize_cost": false, "ot_diagnostics": true, "ot_strict_mode": true,
+  "ot_sampling_strategy": "multinomial", "ot_log_interval_steps": 10,
+  "ot_histogram_interval_steps": 100, "association_debug": false,
+  "log_interval_steps": 10, "grad_clip": 1.0, "inference_steps": 50,
+  "validation_interval_epochs": 500, "validation_fixed_noise_seed": 2025,
+  "heldout_role": "upstream_test_final_only", "seed": 31, "device": "cuda:0",
+  "wandb_mode": "online", "wandb_project": "RCFM",
+  "wandb_group": "mmecg-subject-split-fourway", "wandb_job_type": "train",
+  "wandb_run_name": "mmecg-rcfm-subject-split-seed31"
+}

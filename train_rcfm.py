@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import random
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import torch
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from data import get_ecg2ecg_datasets, get_ppg2ecg_datasets
-from model import ConditionNet, DiffusionUNetCrossAttention
-from rcfm import RegionAwareConditionalFlowMatching
+from src.rcfm.training import run_training
 
 
 def set_deterministic(seed: int | None) -> None:
@@ -34,121 +32,106 @@ def parse_datasets(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def build_datasets(task: str, datasets: Iterable[str], data_root: str, window_size: int):
+def parse_lead_indices(value) -> list[int] | None:
+    if value is None:
+        return None
+    items = value if isinstance(value, (list, tuple)) else str(value).split(",")
+    indices = [int(item) for item in items]
+    if not indices or len(set(indices)) != len(indices) or min(indices) < 0:
+        raise ValueError("target lead indices must be nonempty, unique, and nonnegative")
+    return indices
+
+
+def build_datasets(
+    task: str,
+    datasets: Iterable[str],
+    data_root: str,
+    window_size: int,
+    normalization_metadata: dict[str, object] | None = None,
+    normalization_id: str = "training_global_zscore_v1",
+    condition_lead_index: int | None = None,
+    target_lead_index: int | None = None,
+    target_lead_indices: list[int] | str | None = None,
+    load_train: bool = True,
+    heldout_split: str = "val",
+    max_train_records: int | None = None,
+    max_heldout_records: int | None = None,
+):
     if task in {"ppg2ecg", "rcg2ecg"}:
         return get_ppg2ecg_datasets(
             DATA_PATH=data_root,
             datasets=list(datasets),
             window_size=window_size,
-            clean_condition_ppg=task == "ppg2ecg",
+            clean_condition_ppg=False,
+            normalization_metadata=normalization_metadata,
+            normalization_id=normalization_id,
+            load_train=load_train,
+            max_train_records=max_train_records,
+            max_heldout_records=max_heldout_records,
         )
     if task == "ecg2ecg":
+        parsed_targets = parse_lead_indices(target_lead_indices)
+        if parsed_targets is None and target_lead_index is not None:
+            parsed_targets = [target_lead_index]
+        if condition_lead_index is None or parsed_targets is None:
+            raise ValueError("ecg2ecg requires condition lead and target lead indices")
+        if condition_lead_index < 0:
+            raise ValueError("ECG lead indices must be nonnegative")
         return get_ecg2ecg_datasets(
             DATA_PATH=data_root,
             datasets=list(datasets),
             window_size=window_size,
+            condition_lead=condition_lead_index,
+            target_lead=parsed_targets,
+            normalization_metadata=normalization_metadata,
+            normalization_id=normalization_id,
+            load_train=load_train,
+            heldout_split=heldout_split,
+            max_train_records=max_train_records,
+            max_heldout_records=max_heldout_records,
         )
     raise ValueError(f"Unknown task={task!r}")
 
 
 def train(args: argparse.Namespace) -> None:
-    set_deterministic(args.seed)
-    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
-    datasets = parse_datasets(args.datasets)
-    train_set, _ = build_datasets(args.task, datasets, args.data_root, args.window_size)
-    loader = DataLoader(
-        train_set,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
-        drop_last=args.use_minibatch_ot,
-    )
+    """Run the instrumented canonical trainer."""
 
-    signal_length = args.window_size * 128
-    condition_net = ConditionNet().to(device)
-    flow_network = DiffusionUNetCrossAttention(
-        signal_length,
-        1,
-        device=str(device),
-        num_heads=args.attention_heads,
-    ).to(device)
-    rcfm = RegionAwareConditionalFlowMatching(
-        flow_model=flow_network,
-        flow_matcher_type=args.flow_matcher,
-        sigma=args.sigma,
-        region_weight=args.region_weight,
-        use_minibatch_ot=args.use_minibatch_ot,
-        ot_method=args.ot_method,
-        ot_reg=args.ot_reg,
-    ).to(device)
-
-    optimizer = torch.optim.AdamW(
-        list(rcfm.parameters()) + list(condition_net.parameters()),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-    warmup_epochs = min(args.warmup_epochs, max(args.epochs - 1, 0))
-    main_epochs = max(args.epochs - warmup_epochs, 1)
-    scheduler = SequentialLR(
-        optimizer,
-        schedulers=[
-            LinearLR(optimizer, start_factor=1e-6, end_factor=1.0, total_iters=max(warmup_epochs, 1)),
-            CosineAnnealingLR(optimizer, T_max=main_epochs),
-        ],
-        milestones=[warmup_epochs],
-    )
-
-    run_dir = Path(args.output_dir) / args.task / "-".join(datasets)
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    for epoch in range(args.epochs):
-        rcfm.train()
-        condition_net.train()
-        losses: list[float] = []
-        pbar = tqdm(loader, desc=f"epoch {epoch + 1}/{args.epochs}")
-
-        for target_ecg, condition_signal, region_mask in pbar:
-            target_ecg = target_ecg.float().to(device)
-            condition_signal = condition_signal.float().to(device)
-            region_mask = region_mask.float().to(device)
-
-            optimizer.zero_grad(set_to_none=True)
-            conditions = condition_net(condition_signal)
-            output = rcfm(
-                target=target_ecg,
-                conditions=conditions,
-                region_mask=region_mask,
-            )
-            loss = output["loss"]
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                list(rcfm.parameters()) + list(condition_net.parameters()),
-                max_norm=args.grad_clip,
-            )
-            optimizer.step()
-
-            losses.append(float(loss.detach().cpu()))
-            pbar.set_postfix(loss=f"{losses[-1]:.4f}")
-
-            if args.max_batches is not None and len(losses) >= args.max_batches:
-                break
-
-        scheduler.step()
-        mean_loss = float(np.mean(losses)) if losses else float("nan")
-        print(f"epoch={epoch + 1} loss={mean_loss:.6f} lr={optimizer.param_groups[0]['lr']:.3e}")
-
-        if (epoch + 1) % args.save_every == 0 or epoch + 1 == args.epochs:
-            torch.save(rcfm.state_dict(), run_dir / f"rcfm_{args.flow_matcher}_epoch_{epoch + 1}.pth")
-            torch.save(condition_net.state_dict(), run_dir / f"condition_net_epoch_{epoch + 1}.pth")
+    run_training(args, build_datasets)
 
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", choices=["ecg2ecg", "ppg2ecg", "rcg2ecg"], default="ppg2ecg")
     parser.add_argument("--datasets", default="MIMIC-AFib", help="Comma-separated dataset names.")
-    parser.add_argument("--data_root", default="/data/user/RCFM/data/")
-    parser.add_argument("--output_dir", default="./saved/reviewer")
+    parser.add_argument("--data_root", default=os.environ.get("RCFM_DATA_ROOT"))
+    parser.add_argument("--output_dir", default=os.environ.get("RCFM_RUNS_ROOT"))
+    parser.add_argument("--config", default=None, help="JSON-formatted resolved-config template.")
+    parser.add_argument("--run_id", default=None)
+    parser.add_argument("--dataset_version", default=None)
+    parser.add_argument("--split_hash", default=None)
+    parser.add_argument(
+        "--normalization_id",
+        choices=[
+            "training_global_zscore_v1",
+            "record_zscore_v1",
+            "record_minmax_neg1_1_v1",
+            "rddm_window_minmax_neg1_1_v1",
+            "window_minmax_neg1_1_v1",
+        ],
+        default="training_global_zscore_v1",
+    )
+    parser.add_argument("--condition_unit", default=None)
+    parser.add_argument("--target_unit", default=None)
+    parser.add_argument("--alignment_id", default=None)
+    parser.add_argument("--condition_lead", default=None)
+    parser.add_argument("--target_lead", default=None)
+    parser.add_argument("--condition_lead_index", type=int)
+    parser.add_argument("--target_lead_index", type=int)
+    parser.add_argument(
+        "--target_lead_indices",
+        default=None,
+        help="Comma-separated target indices for joint multi-lead generation.",
+    )
     parser.add_argument("--window_size", type=int, default=4, help="Window length in seconds at 128 Hz.")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=128)
@@ -157,19 +140,107 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--warmup_epochs", type=int, default=2)
     parser.add_argument("--save_every", type=int, default=5)
+    parser.add_argument(
+        "--checkpoint_policy",
+        choices=["full", "latest_only"],
+        default="full",
+        help="Use latest_only for disposable smoke runs to avoid duplicate large checkpoints.",
+    )
     parser.add_argument("--attention_heads", type=int, default=8)
-    parser.add_argument("--flow_matcher", choices=["conditional", "target", "sb", "vp"], default="vp")
-    parser.add_argument("--sigma", type=float, default=0.1)
-    parser.add_argument("--region_weight", type=float, default=1.0)
+    parser.add_argument(
+        "--flow_matcher",
+        choices=["conditional", "target", "sb", "vp"],
+        default="conditional",
+    )
+    parser.add_argument(
+        "--experiment_role",
+        choices=["canonical", "path_ablation"],
+        default="canonical",
+    )
+    parser.add_argument("--sigma", type=float, default=0.0)
+    parser.add_argument("--region_weight", type=float, default=0.01)
     parser.add_argument("--use_minibatch_ot", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ot_method", choices=["exact", "sinkhorn", "unbalanced", "partial"], default="sinkhorn")
     parser.add_argument("--ot_reg", type=float, default=0.05)
+    parser.add_argument("--ot_normalize_cost", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--ot_diagnostics", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--ot_strict_mode", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--ot_sampling_strategy",
+        choices=["multinomial", "assignment"],
+        default="multinomial",
+    )
+    parser.add_argument("--ot_log_interval_steps", type=int, default=1)
+    parser.add_argument("--ot_histogram_interval_steps", type=int, default=100)
+    parser.add_argument("--association_debug", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--log_interval_steps", type=int, default=10)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=31)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--inference_steps", type=int, default=50)
+    parser.add_argument("--validation_interval_epochs", type=int, default=1)
+    parser.add_argument(
+        "--heldout_role",
+        choices=["validation", "upstream_test_final_only"],
+        default="validation",
+    )
+    parser.add_argument("--validation_max_batches", type=int, default=None)
+    parser.add_argument("--validation_fixed_noise_seed", type=int, default=2025)
+    parser.add_argument(
+        "--wandb_mode", choices=["disabled", "offline", "online"], default="disabled"
+    )
+    parser.add_argument("--wandb_project", default="RCFM")
+    parser.add_argument("--wandb_group", default=None)
+    parser.add_argument("--wandb_job_type", default="train")
+    parser.add_argument("--wandb_run_name", default=None)
     parser.add_argument("--max_batches", type=int, default=None, help="Debug option for short smoke runs.")
+    parser.add_argument(
+        "--max_train_records",
+        type=int,
+        default=None,
+        help="Smoke-only cap applied after fitting normalization on the full training split.",
+    )
+    parser.add_argument(
+        "--max_heldout_records",
+        type=int,
+        default=None,
+        help="Smoke-only cap on validation records.",
+    )
     return parser
 
 
+def parse_args_with_config(
+    argv: list[str] | None = None,
+    parser: argparse.ArgumentParser | None = None,
+) -> argparse.Namespace:
+    preliminary = argparse.ArgumentParser(add_help=False)
+    preliminary.add_argument("--config")
+    known, _ = preliminary.parse_known_args(argv)
+    parser = parser or build_argparser()
+    if known.config:
+        config_path = Path(known.config)
+        defaults = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(defaults, dict):
+            raise ValueError("config template must contain a JSON object")
+        unknown = sorted(set(defaults) - {action.dest for action in parser._actions})
+        if unknown:
+            raise ValueError(f"config template has unknown keys: {unknown}")
+        parser.set_defaults(**defaults)
+    parsed = parser.parse_args(argv)
+    required = (
+        "dataset_version", "split_hash", "condition_unit", "target_unit",
+        "alignment_id", "condition_lead", "target_lead",
+    )
+    missing = [name for name in required if not getattr(parsed, name)]
+    if missing:
+        parser.error("missing required experiment metadata: " + ", ".join(missing))
+    return parsed
+
+
 if __name__ == "__main__":
-    train(build_argparser().parse_args())
+    parsed_args = parse_args_with_config()
+    if not parsed_args.data_root:
+        raise ValueError("--data_root or RCFM_DATA_ROOT is required")
+    if not parsed_args.output_dir:
+        raise ValueError("--output_dir or RCFM_RUNS_ROOT is required")
+    train(parsed_args)

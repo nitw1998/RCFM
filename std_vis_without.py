@@ -97,7 +97,7 @@ def run_eval():
         Conditioning_network1.eval()
         Conditioning_network2.eval()
 
-        for i, (y12_ecg, x_ecg, ecg_roi) in enumerate(testloader):
+        for i, (y12_ecg, x_ecg) in enumerate(testloader):
             if i == 0:
                 visualize_xt_distance_to_target(
                     model=dpm,
@@ -115,7 +115,7 @@ def run_eval():
         flow_model.eval()
         condition_net.eval()
 
-        for i, (y12_ecg, x_ecg, ecg_roi) in enumerate(testloader):
+        for i, (y12_ecg, x_ecg) in enumerate(testloader):
             if i == 0:
                 visualize_xt_distance_to_target(
                     model=flow_model,

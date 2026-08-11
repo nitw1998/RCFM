@@ -154,7 +154,7 @@ def infer_and_compare(
         _, dataset_test = get_ppg2ecg_datasets()
 
     test_loader = DataLoader(dataset_test, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    all_y, all_x, _ = next(iter(test_loader))
+    all_y, all_x = next(iter(test_loader))
     if dataset in ["ICBEB", "PTBXL"]:
         print(all_y.shape)
         y_target = all_y[pick_index:pick_index+1].float().to(device)

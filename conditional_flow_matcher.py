@@ -93,13 +93,20 @@ class TargetConditionalFlowMatcher(ConditionalFlowMatcher):
 
 
 class SchrodingerBridgeConditionalFlowMatcher(ConditionalFlowMatcher):
-    def __init__(self, sigma: Union[float, int] = 1.0, ot_method="exact"):
+    def __init__(
+        self,
+        sigma: Union[float, int] = 1.0,
+        ot_method="exact",
+        apply_ot: bool = True,
+    ):
         if sigma <= 0:
             raise ValueError(f"Sigma must be strictly positive, got {sigma}.")
         if sigma < 1e-3:
             warnings.warn("Small sigma values may lead to numerical instability.")
         super().__init__(sigma)
-        self.ot_sampler = OTPlanSampler(method=ot_method, reg=2 * self.sigma**2)
+        self.ot_sampler = (
+            OTPlanSampler(method=ot_method, reg=2 * self.sigma**2) if apply_ot else None
+        )
 
     def compute_sigma_t(self, t):
         return self.sigma * torch.sqrt(t * (1 - t))
@@ -110,13 +117,15 @@ class SchrodingerBridgeConditionalFlowMatcher(ConditionalFlowMatcher):
         return ((1 - 2 * t) / (2 * t * (1 - t) + 1e-8)) * (xt - mu_t) + x1 - x0
 
     def sample_location_and_conditional_flow(self, x0, x1, t=None, return_noise=False):
-        x0, x1 = self.ot_sampler.sample_plan(x0, x1)
+        if self.ot_sampler is not None:
+            x0, x1 = self.ot_sampler.sample_plan(x0, x1)
         return super().sample_location_and_conditional_flow(x0, x1, t, return_noise)
 
     def guided_sample_location_and_conditional_flow(
         self, x0, x1, y0=None, y1=None, t=None, return_noise=False
     ):
-        x0, x1, y0, y1 = self.ot_sampler.sample_plan_with_labels(x0, x1, y0, y1)
+        if self.ot_sampler is not None:
+            x0, x1, y0, y1 = self.ot_sampler.sample_plan_with_labels(x0, x1, y0, y1)
         out = super().sample_location_and_conditional_flow(x0, x1, t, return_noise)
         if return_noise:
             t, xt, ut, eps = out

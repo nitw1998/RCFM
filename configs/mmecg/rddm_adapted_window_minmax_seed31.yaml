@@ -1,0 +1,20 @@
+{
+  "task": "rcg2ecg", "datasets": "mmECG",
+  "dataset_version": "mmecg-public-20221108-subject-split-window-minmax-v1",
+  "split_hash": "e26fc81121cfd3b0e457608e37a7aa496ac7c48a0e0e7583a465bd069cc9da9f",
+  "normalization_id": "window_minmax_neg1_1_v1",
+  "alignment_id": "same_record_same_window_no_additional_phase_correction_subject_split_v1",
+  "window_size": 4, "heldout_split": "test",
+  "expected_train_windows": 9590, "expected_test_windows": 2877,
+  "epochs": 500, "batch_size": 128, "num_workers": 2,
+  "learning_rate": 0.0001, "weight_decay": 0.01, "scheduler_t_max": 1000,
+  "save_every": 25, "nT": 10, "beta_start": 0.0001, "beta_end": 0.2,
+  "attention_heads": 8, "condition_drop_probability": 0.0,
+  "ddpm_loss_weight": 100.0, "region_loss_weight": 1.0,
+  "seed": 31, "device": "cuda:0", "log_interval_steps": 10,
+  "wandb_mode": "online", "wandb_project": "RCFM",
+  "wandb_group": "mmecg-subject-split-fourway", "wandb_job_type": "train",
+  "upstream_repository": "https://github.com/DebadityaQU/RDDM",
+  "upstream_commit": "7d5348843c3985c211a23ae5105a2d9497d5156a",
+  "upstream_license": "MIT", "reproduction_label": "RDDM-RCG (adapted)"
+}

@@ -77,13 +77,11 @@ def eval_diffusion( window_size, EVAL_DATASETS, nT=10, batch_size=64, PATH=None,
             fake_ecgs = np.zeros((1, 128*window_size))
             real_ecgs = np.zeros((1, 128*window_size))
             real_ppgs = np.zeros((1, 128*window_size))
-            true_rois = np.zeros((1, 128*window_size))
 
-            for y12_ecg, x_ecg, ecg_roi in tqdm(testloader):
+            for y12_ecg, x_ecg in tqdm(testloader):
 
                 x_ecg = x_ecg.float().to(device)
                 y12_ecg = y12_ecg.float().to(device)
-                ecg_roi = ecg_roi.float().to(device)
 
                 generated_windows = []
 
@@ -112,7 +110,6 @@ def eval_diffusion( window_size, EVAL_DATASETS, nT=10, batch_size=64, PATH=None,
                 fake_ecgs = np.concatenate((fake_ecgs, xh.reshape(-1, 128*window_size)))
                 real_ecgs = np.concatenate((real_ecgs, y12_ecg.reshape(-1, 128*window_size).cpu().numpy()))
                 real_ppgs = np.concatenate((real_ppgs, x_ecg.reshape(-1, 128*window_size).cpu().numpy()))
-                true_rois = np.concatenate((true_rois, ecg_roi.reshape(-1, 128*window_size).cpu().numpy()))
                 fd_list.append(fd)
 
 
@@ -160,13 +157,11 @@ def eval_diffusion( window_size, EVAL_DATASETS, nT=10, batch_size=64, PATH=None,
             fake_ecgs = np.zeros((1, 128*window_size))
             real_ecgs = np.zeros((1, 128*window_size))
             real_ppgs = np.zeros((1, 128*window_size))
-            true_rois = np.zeros((1, 128*window_size))
 
-            for y12_ecg, x_ecg, ecg_roi in tqdm(testloader):
+            for y12_ecg, x_ecg in tqdm(testloader):
 
                 x_ecg = x_ecg.float().to(device)
                 y12_ecg = y12_ecg.float().to(device)
-                ecg_roi = ecg_roi.float().to(device)
 
                 generated_windows = []
 
@@ -194,7 +189,6 @@ def eval_diffusion( window_size, EVAL_DATASETS, nT=10, batch_size=64, PATH=None,
                 fake_ecgs = np.concatenate((fake_ecgs, xh.reshape(-1, 128*window_size)))
                 real_ecgs = np.concatenate((real_ecgs, y12_ecg.reshape(-1, 128*window_size).cpu().numpy()))
                 real_ppgs = np.concatenate((real_ppgs, x_ecg.reshape(-1, 128*window_size).cpu().numpy()))
-                true_rois = np.concatenate((true_rois, ecg_roi.reshape(-1, 128*window_size).cpu().numpy()))
                 fd_list.append(fd)
 
                 # plot one example
@@ -258,4 +252,3 @@ if __name__ == "__main__":
     #     )
     #     print(f"\n{dataset_name}: Mean Absolute Error (BPM) is {tracked_metrics['MAE_HR_ECG']}")
     #     print("-"*1000)
-
