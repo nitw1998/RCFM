@@ -1,10 +1,15 @@
 import numpy as np
 
 from scripts.evaluate_mmecg_phase_clinical import (
+    MODEL_LABELS,
     _configure_ieee_fonts,
     _record_measurement,
     _subject_agreement,
 )
+
+
+def test_mmecg_cfm_ot_label_is_available():
+    assert MODEL_LABELS["cfm_ot"] == "CFM+OT"
 
 
 def test_subject_agreement_aggregates_paired_windows_before_comparison():

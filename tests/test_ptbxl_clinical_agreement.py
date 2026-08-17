@@ -3,6 +3,8 @@ import pytest
 import matplotlib.pyplot as plt
 
 from scripts.evaluate_ptbxl_clinical_agreement import (
+    AMPLITUDE_PARAMETERS,
+    MODEL_LABELS,
     _agreement_row,
     _configure_ieee_style,
     _inverse_oracle_minmax,
@@ -11,6 +13,7 @@ from scripts.evaluate_ptbxl_clinical_agreement import (
     _patient_parameter_pairs,
     _valid_source_protocol,
 )
+from scripts.plot_ptbxl_representative_lead import _cached_parameters, _patient_pairs
 
 
 def test_oracle_inverse_minmax_restores_multilead_values():
@@ -78,3 +81,33 @@ def test_smoke_protocol_requires_an_explicit_record_cap():
     assert not _valid_source_protocol(
         {"status": "completed", "protocol": {"phase_correction_applied": True}}, None
     )
+
+
+def test_ptbxl_clinical_protocol_includes_qrs_peak_to_peak():
+    assert "qrs_peak_to_peak_amplitude" in AMPLITUDE_PARAMETERS
+
+
+def test_diagmask_sixway_labels_are_available():
+    assert MODEL_LABELS["cfm_ot"] == "CFM+OT"
+    assert MODEL_LABELS["diag_ot"] == "RCFM-DiagMask-OT"
+    assert MODEL_LABELS["semantic"] == "RCFM-SemanticMask"
+    assert "neg. ctrl." in MODEL_LABELS["ecgmamba_diag"]
+    assert MODEL_LABELS["ecgmamba_semantic"] == "ECGMamba-Sem"
+
+
+def test_cached_representative_lead_uses_patient_means_without_imputation():
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {
+            "patient_id": [1, 1, 2, 3],
+            "lead": ["V3", "V3", "V3", "I"],
+            "model": ["cfm"] * 4,
+            "real_rr_ms": [800.0, 1000.0, 700.0, 600.0],
+            "generated_rr_ms": [820.0, 1020.0, 710.0, 605.0],
+        }
+    )
+    assert _cached_parameters(frame) == ("rr_ms",)
+    real, generated = _patient_pairs(frame, "cfm", "V3", "rr_ms")
+    np.testing.assert_allclose(real, [900.0, 700.0])
+    np.testing.assert_allclose(generated, [920.0, 710.0])

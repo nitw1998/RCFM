@@ -122,6 +122,19 @@ def test_checkpoint_accepts_cfm_compare_kind_and_rejects_mislabelling():
         validate_checkpoint(payload)
 
 
+def test_checkpoint_accepts_cfm_ot_kind_and_rejects_disabled_ot():
+    payload = _payload()
+    payload["kind"] = "canonical_multistep_cfm_ot"
+    payload["config"].update(
+        {"model_family": "CFM", "region_weight": 0.0, "use_minibatch_ot": True}
+    )
+    validate_checkpoint(payload)
+
+    payload["config"]["use_minibatch_ot"] = False
+    with pytest.raises(ValueError, match="requires minibatch OT enabled"):
+        validate_checkpoint(payload)
+
+
 @pytest.mark.parametrize("path_type", ("vp", "target"))
 def test_checkpoint_accepts_non_ot_path_ablation_and_rejects_ot(path_type):
     payload = _payload()

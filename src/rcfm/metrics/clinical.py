@@ -210,6 +210,7 @@ def measure_ecg_parameters(
         "qtc_ms": [],
         "p_amplitude": [],
         "r_amplitude": [],
+        "qrs_peak_to_peak_amplitude": [],
         "t_amplitude": [],
         "st_deviation": [],
     }
@@ -263,6 +264,15 @@ def measure_ecg_parameters(
             fields["p_amplitude"].append(float(array[p_peak] - baseline))
         if _valid_index(r_peak, len(array)):
             fields["r_amplitude"].append(float(array[r_peak] - baseline))
+        if (
+            _valid_index(qrs_onset, len(array))
+            and _valid_index(qrs_offset, len(array))
+            and qrs_offset > qrs_onset
+        ):
+            qrs_segment = array[qrs_onset : qrs_offset + 1]
+            fields["qrs_peak_to_peak_amplitude"].append(
+                float(np.max(qrs_segment) - np.min(qrs_segment))
+            )
         if _valid_index(t_peak, len(array)):
             fields["t_amplitude"].append(float(array[t_peak] - baseline))
         st_index = qrs_offset + st_offset_samples
@@ -292,7 +302,11 @@ def measure_ecg_parameters(
         "amplitude_unit": amplitude_unit,
         "amplitude_status": amplitude_status,
         "amplitude_claim_allowed": physical_amplitudes,
-        "amplitude_definition": "signed sample value minus pre-QRS isoelectric median",
+        "amplitude_definition": (
+            "P/R/T are signed sample values minus the pre-QRS isoelectric median; "
+            "QRS peak-to-peak is max-minus-min from independently delineated QRS onset "
+            "through offset"
+        ),
         "st_reference": "pre-QRS isoelectric median",
         "st_offset_ms": float(st_offset_ms),
         "qtc_formula": qtc_formula.lower(),

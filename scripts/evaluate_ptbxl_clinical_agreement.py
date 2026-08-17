@@ -40,17 +40,39 @@ from src.rcfm.metrics.clinical import delineate_ecg, measure_ecg_parameters
 
 PARAMETERS = (
     "heart_rate_bpm", "rr_ms", "pr_ms", "qrs_ms", "qt_ms", "qtc_ms",
-    "p_amplitude", "r_amplitude", "t_amplitude", "st_deviation",
+    "p_amplitude", "r_amplitude", "qrs_peak_to_peak_amplitude", "t_amplitude", "st_deviation",
 )
 INTERVAL_PARAMETERS = ("rr_ms", "pr_ms", "qrs_ms", "qt_ms", "qtc_ms")
-AMPLITUDE_PARAMETERS = ("p_amplitude", "r_amplitude", "t_amplitude", "st_deviation")
+AMPLITUDE_PARAMETERS = (
+    "p_amplitude", "r_amplitude", "qrs_peak_to_peak_amplitude", "t_amplitude", "st_deviation"
+)
 PARAMETER_LABELS = {
     "heart_rate_bpm": "HR", "rr_ms": "RR", "pr_ms": "PR", "qrs_ms": "QRS",
     "qt_ms": "QT", "qtc_ms": "QTc", "p_amplitude": "P", "r_amplitude": "R",
-    "t_amplitude": "T", "st_deviation": "ST",
+    "qrs_peak_to_peak_amplitude": "QRS p-p", "t_amplitude": "T", "st_deviation": "ST",
 }
-MODEL_LABELS = {"cfm": "CFM", "rcfm": "RCFM", "rcfm_ot": "RCFM-OT", "rddm": "RDDM-ECG"}
-MODEL_COLORS = {"cfm": "#2878b5", "rcfm": "#2f8f5b", "rcfm_ot": "#c43d4b", "rddm": "#d17a00"}
+MODEL_LABELS = {
+    "cfm": "CFM", "cfm_ot": "CFM+OT", "rcfm": "RCFM", "rcfm_ot": "RCFM-OT",
+    "pan": "RCFM-Pan", "pan_ot": "RCFM-Pan-OT", "diag": "RCFM-DiagMask",
+    "diag_ot": "RCFM-DiagMask-OT", "rddm": "RDDM-ECG",
+    "semantic": "RCFM-SemanticMask",
+    "ecgmamba_diag": "ECGMamba-Diag (neg. ctrl.)",
+    "ecgmamba_semantic": "ECGMamba-Sem",
+    "diag_l003": r"DiagMask $\lambda=0.03$",
+    "diag_l010": r"DiagMask $\lambda=0.1$",
+    "diag_l030": r"DiagMask $\lambda=0.3$",
+}
+MODEL_COLORS = {
+    "cfm": "#2878b5", "cfm_ot": "#76a5d5", "rcfm": "#2f8f5b", "rcfm_ot": "#c43d4b",
+    "pan": "#2f8f5b", "pan_ot": "#73b58c", "diag": "#b44c97", "diag_ot": "#7b3f98",
+    "rddm": "#d17a00",
+    "semantic": "#008b8b",
+    "ecgmamba_diag": "#8c564b",
+    "ecgmamba_semantic": "#009e73",
+    "diag_l003": "#d98abf", "diag_l010": "#b44c97", "diag_l030": "#6f2d78",
+}
+MODEL_LABELS["direct_cnn"] = "Direct CNN"
+MODEL_COLORS["direct_cnn"] = "#6b4c9a"
 
 
 def _valid_source_protocol(source_protocol: Mapping[str, object], max_records: int | None) -> bool:
@@ -304,8 +326,8 @@ def _plot_main(summary: Mapping[str, object], macro_rows: list[dict[str, object]
         (axes[0], correlation, "Waveform correlation\nmedian record Pearson", (0, 1.0)),
         (axes[1], loa, "Waveform Bland-Altman\n95% LoA width", (0, max(loa) * 1.15)),
     ):
-        bars = axis.bar(np.arange(4), values, color=[MODEL_COLORS[m] for m in MODEL_ORDER], width=0.72)
-        axis.set_xticks(np.arange(4), [MODEL_LABELS[m] for m in MODEL_ORDER], rotation=30, ha="right")
+        bars = axis.bar(np.arange(len(MODEL_ORDER)), values, color=[MODEL_COLORS[m] for m in MODEL_ORDER], width=0.72)
+        axis.set_xticks(np.arange(len(MODEL_ORDER)), [MODEL_LABELS[m] for m in MODEL_ORDER], rotation=30, ha="right")
         axis.set_ylim(*limit); axis.set_title(title); axis.grid(axis="y", alpha=0.2)
         for bar, value in zip(bars, values):
             axis.annotate(f"{value:.3f}", (bar.get_x() + bar.get_width() / 2, value), xytext=(0, 2), textcoords="offset points", ha="center", fontsize=5.5)
@@ -321,10 +343,10 @@ def _plot_clinical(macro_rows: list[dict[str, object]], output: Path) -> list[Pa
     panels = (
         (INTERVAL_PARAMETERS, "mae", "Interval MAE (ms)", ".1f", "YlOrRd", None, None),
         (INTERVAL_PARAMETERS, "pearson_r", "Interval Pearson r", ".2f", "RdBu_r", -1, 1),
-        (INTERVAL_PARAMETERS, "ba_loa_width", "Interval BA LoA width (ms)", ".1f", "YlOrRd", None, None),
+        (INTERVAL_PARAMETERS, "ba_loa_width", "Interval BA LoA\nwidth (ms)", ".1f", "YlOrRd", None, None),
         (AMPLITUDE_PARAMETERS, "mae", "Amplitude MAE (mV)\nOracle inverse", ".3f", "YlOrRd", None, None),
         (AMPLITUDE_PARAMETERS, "pearson_r", "Amplitude Pearson r\nOracle inverse", ".2f", "RdBu_r", -1, 1),
-        (AMPLITUDE_PARAMETERS, "ba_loa_width", "Amplitude BA LoA width (mV)\nOracle inverse", ".3f", "YlOrRd", None, None),
+        (AMPLITUDE_PARAMETERS, "ba_loa_width", "Amplitude BA LoA\nwidth (mV)\nOracle inverse", ".3f", "YlOrRd", None, None),
     )
     for axis, (parameters, field, title, fmt, cmap, vmin, vmax) in zip(axes.flat, panels):
         _annotated_heatmap(axis, _matrix(macro, parameters, field), parameters, title, fmt, cmap, vmin, vmax)
@@ -336,11 +358,13 @@ def _plot_bland_altman(
     pairs: Mapping[tuple[str, str], tuple[np.ndarray, np.ndarray]],
     model: str,
     output: Path,
+    lead: str = "I",
+    parameters: tuple[str, ...] = PARAMETERS,
 ) -> list[Path]:
     _configure_ieee_style()
-    figure, axes = plt.subplots(2, 5, figsize=(7.16, 4.35), constrained_layout=True)
+    figure, axes = plt.subplots(3, 4, figsize=(7.16, 6.0), constrained_layout=True)
     color = MODEL_COLORS[model]
-    for axis, parameter in zip(axes.flat, PARAMETERS):
+    for axis, parameter in zip(axes.flat, parameters):
         real, generated = pairs[(model, parameter)]
         means = (real + generated) / 2.0
         differences = generated - real
@@ -359,15 +383,22 @@ def _plot_bland_altman(
         axis.set_xlabel(f"Pair mean ({unit})")
         axis.set_ylabel(f"Generated - real ({unit})")
         axis.grid(alpha=0.16)
+    for axis in axes.flat[len(parameters) :]:
+        axis.set_visible(False)
     axes.flat[0].legend(frameon=False, loc="best")
     figure.suptitle(
-        f"{MODEL_LABELS[model]} Lead I ECG-parameter Bland-Altman (patient level)",
+        f"{MODEL_LABELS[model]} Lead {lead} ECG-parameter Bland-Altman (patient level)",
         fontsize=8.5,
     )
     return _save_figure(figure, output)
 
 
 def run(args: argparse.Namespace) -> Path:
+    global MODEL_ORDER
+    MODEL_ORDER = tuple(args.models)
+    unsupported = [model for model in MODEL_ORDER if model not in MODEL_LABELS]
+    if not MODEL_ORDER or unsupported or len(set(MODEL_ORDER)) != len(MODEL_ORDER):
+        raise ValueError(f"invalid PTB-XL clinical model list: {unsupported}")
     input_dir, data_dir, output_dir = args.input_dir.resolve(), args.data_dir.resolve(), args.output_dir.resolve()
     if output_dir.exists() and any(output_dir.iterdir()):
         raise FileExistsError(f"refusing to overwrite nonempty output directory: {output_dir}")
@@ -375,6 +406,11 @@ def run(args: argparse.Namespace) -> Path:
     source_protocol = json.loads((input_dir / "protocol.json").read_text(encoding="utf-8"))
     if not _valid_source_protocol(source_protocol, args.max_records):
         raise ValueError("PTB-XL clinical analysis requires completed raw predictions")
+    source_comparisons = source_protocol.get("analysis_comparisons") or []
+    analysis_comparisons = [
+        pair for pair in source_comparisons
+        if len(pair) == 2 and pair[0] in MODEL_ORDER and pair[1] in MODEL_ORDER
+    ]
     with np.load(input_dir / "paired_reference.npz", allow_pickle=False) as artifact:
         targets = np.asarray(artifact["targets"], dtype=np.float32)
         patient_ids = np.asarray(artifact["patient_ids"])
@@ -401,7 +437,9 @@ def run(args: argparse.Namespace) -> Path:
     rows: list[dict[str, object]] = []
     per_record_rows: list[dict[str, object]] = []
     delineation = {}
-    lead_i_ba_pairs: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+    if args.representative_lead not in TARGET_LEADS:
+        raise ValueError(f"representative lead must be one of {TARGET_LEADS}")
+    representative_ba_pairs: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
     try:
         for lead_index, lead in enumerate(TARGET_LEADS):
             print(f"clinical delineation: real lead {lead}", flush=True)
@@ -421,8 +459,8 @@ def run(args: argparse.Namespace) -> Path:
                 for parameter in PARAMETERS:
                     patients, real_values, generated_values = _patient_parameter_pairs(real, generated, patient_ids, parameter)
                     rows.append(_agreement_row(model, lead, parameter, real_values, generated_values))
-                    if lead == "I":
-                        lead_i_ba_pairs[(model, parameter)] = (real_values, generated_values)
+                    if lead == args.representative_lead:
+                        representative_ba_pairs[(model, parameter)] = (real_values, generated_values)
                 for index, (real_item, generated_item) in enumerate(zip(real, generated)):
                     row = {
                         "record_id": str(record_ids[index]), "patient_id": str(patient_ids[index]),
@@ -466,6 +504,7 @@ def run(args: argparse.Namespace) -> Path:
                     "qtc_formula": "fridericia", "st_offset_ms": 60.0,
                     "amplitude_unit": "mV", "generated_inverse": "oracle ground-truth target min/range",
                     "hrv": "blocked_four_second_records", "p_wave": p_wave_policy,
+                    "representative_bland_altman_lead": args.representative_lead,
                 },
                 "delineation": delineation,
                 "per_lead_agreement": rows,
@@ -482,9 +521,10 @@ def run(args: argparse.Namespace) -> Path:
     for model in MODEL_ORDER:
         outputs.extend(
             _plot_bland_altman(
-                lead_i_ba_pairs,
+                representative_ba_pairs,
                 model,
-                output_dir / f"{model}_lead_i_ecg_parameter_bland_altman",
+                output_dir / f"{model}_lead_{args.representative_lead.lower()}_ecg_parameter_bland_altman",
+                lead=args.representative_lead,
             )
         )
     status = "completed" if count == 2203 else "smoke_completed"
@@ -494,6 +534,9 @@ def run(args: argparse.Namespace) -> Path:
         "source_protocol_sha256": _sha256(input_dir / "protocol.json"),
         "source_waveform_summary_sha256": _sha256(input_dir / "waveform_summary.json"),
         "records": count, "patients": int(len(np.unique(patient_ids))), "workers": args.workers,
+        "representative_bland_altman_lead": args.representative_lead,
+        "models": list(MODEL_ORDER),
+        "analysis_comparisons": analysis_comparisons or None,
         "metadata_csv": {"path": str(args.metadata_csv.resolve()), "sha256": _sha256(args.metadata_csv)},
         "p_wave_policy": p_wave_policy,
         "figure_style": {"width_inches": 7.16, "font_family": "Liberation Serif (Times-compatible)", "pdf_fonttype": 42, "png_dpi": 600},
@@ -514,6 +557,11 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--sampling_rate", type=float, default=128.0)
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--max_records", type=int, default=None)
+    parser.add_argument("--representative_lead", choices=TARGET_LEADS, default="V3")
+    parser.add_argument(
+        "--models", nargs="+", default=list(MODEL_ORDER),
+        help="Prediction filename prefixes (default: cfm rcfm rcfm_ot rddm).",
+    )
     return parser
 
 

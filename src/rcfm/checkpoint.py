@@ -36,6 +36,7 @@ REQUIRED_CONFIG_FIELDS = {
 
 CHECKPOINT_KINDS = {
     "canonical_multistep_cfm": "CFM",
+    "canonical_multistep_cfm_ot": "CFM",
     "canonical_multistep_rcfm": "RCFM",
     "path_ablation_rcfm": "RCFM",
 }
@@ -48,8 +49,8 @@ def validate_checkpoint(payload: Mapping[str, Any]) -> None:
     kind = payload.get("kind")
     if kind not in CHECKPOINT_KINDS:
         raise ValueError(
-            "checkpoint kind must be canonical_multistep_cfm, canonical_multistep_rcfm, "
-            "or path_ablation_rcfm"
+            "checkpoint kind must be canonical_multistep_cfm, canonical_multistep_cfm_ot, "
+            "canonical_multistep_rcfm, or path_ablation_rcfm"
         )
     for field in (
         "epoch",
@@ -89,8 +90,10 @@ def validate_checkpoint(payload: Mapping[str, Any]) -> None:
         raise ValueError("checkpoint kind and config model_family disagree")
     if model_family == "CFM" and float(config["region_weight"]) != 0.0:
         raise ValueError("canonical CFM checkpoint requires region_weight=0")
-    if model_family == "CFM" and bool(config["use_minibatch_ot"]):
+    if kind == "canonical_multistep_cfm" and bool(config["use_minibatch_ot"]):
         raise ValueError("canonical CFM checkpoint requires minibatch OT disabled")
+    if kind == "canonical_multistep_cfm_ot" and not bool(config["use_minibatch_ot"]):
+        raise ValueError("CFM-OT checkpoint requires minibatch OT enabled")
     if config["task"] == "ecg2ecg":
         target_indices = config.get("target_lead_indices")
         if target_indices is None and config.get("target_lead_index") is not None:

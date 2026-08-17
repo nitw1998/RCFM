@@ -94,6 +94,71 @@ def gradcam_native_multi_1d(
     return cams, logits_array
 
 
+def gradcam_native_multi_target_1d(
+    model: torch.nn.Module,
+    target_layers: Mapping[str, torch.nn.Module],
+    inputs: torch.Tensor,
+    target_indices: Sequence[int],
+    reduction: str = "mean",
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Return Grad-CAMs for an aggregate of known-positive class logits."""
+
+    indices = [int(index) for index in target_indices]
+    if not indices or len(set(indices)) != len(indices) or min(indices) < 0:
+        raise ValueError("target_indices must be nonempty, unique, and nonnegative")
+    if reduction not in {"mean", "sum"}:
+        raise ValueError("reduction must be mean or sum")
+    if inputs.ndim != 3 or inputs.shape[0] != 1:
+        raise ValueError("inputs must have shape (1, channels, time)")
+    if not target_layers:
+        raise ValueError("target_layers must be nonempty")
+
+    captured: dict[str, torch.Tensor] = {}
+    handles = []
+
+    def hook_for(name: str):
+        def capture_activation(_module, _module_inputs, output):
+            if not isinstance(output, torch.Tensor):
+                raise TypeError("target layer output must be a tensor")
+            output.retain_grad()
+            captured[name] = output
+
+        return capture_activation
+
+    for name, layer in target_layers.items():
+        if not name:
+            raise ValueError("target layer names must be nonempty")
+        handles.append(layer.register_forward_hook(hook_for(name)))
+    try:
+        model.zero_grad(set_to_none=True)
+        logits = model(inputs)
+        if logits.ndim != 2 or logits.shape[0] != 1:
+            raise ValueError("model output must have shape (1, classes)")
+        if max(indices) >= logits.shape[1]:
+            raise IndexError("a target index exceeds model output width")
+        score = logits[0, indices].mean() if reduction == "mean" else logits[0, indices].sum()
+        score.backward()
+        cams: dict[str, np.ndarray] = {}
+        for name in target_layers:
+            activation = captured.get(name)
+            if activation is None or activation.grad is None:
+                raise RuntimeError(f"Grad-CAM target layer {name!r} did not retain a gradient")
+            if activation.ndim != 3 or activation.shape[0] != 1:
+                raise ValueError("target layers must produce shape (1, channels, time)")
+            weights = activation.grad.mean(dim=-1, keepdim=True)
+            cam = torch.relu((weights * activation).sum(dim=1))
+            cams[name] = cam[0].detach().cpu().numpy().astype(np.float32, copy=False)
+        logits_array = logits[0].detach().cpu().numpy().astype(np.float32, copy=False)
+    finally:
+        for handle in handles:
+            handle.remove()
+    if not np.all(np.isfinite(logits_array)) or any(
+        not np.all(np.isfinite(cam)) for cam in cams.values()
+    ):
+        raise ValueError("Grad-CAM or logits contain nonfinite values")
+    return cams, logits_array
+
+
 def project_cam_to_sample_grid(
     native_cam: np.ndarray,
     output_length: int,

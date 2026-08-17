@@ -186,6 +186,31 @@ def test_ptbxl_configs_freeze_official_waveform_only_protocol():
     assert parsed_exact_ot.ot_sampling_strategy == "assignment"
 
 
+def test_ptbxl_diagmask_pair_changes_only_exact_coupling_fields():
+    root = Path(__file__).resolve().parents[1] / "configs" / "ptbxl"
+    no_ot_path = root / "rcfm_diagmask_record_minmax_no_ot_seed31.yaml"
+    exact_ot_path = root / "rcfm_diagmask_record_minmax_exact_ot_seed31.yaml"
+    no_ot = json.loads(no_ot_path.read_text(encoding="utf-8"))
+    exact_ot = json.loads(exact_ot_path.read_text(encoding="utf-8"))
+    allowed = {"use_minibatch_ot", "ot_sampling_strategy"}
+
+    assert {key: value for key, value in no_ot.items() if key not in allowed} == {
+        key: value for key, value in exact_ot.items() if key not in allowed
+    }
+    assert no_ot["mask_method"] == (
+        "xresnet1d101_all_positive_statements_gradcam_l5_sample_center_v1"
+    )
+    assert no_ot["use_minibatch_ot"] is False
+    assert exact_ot["use_minibatch_ot"] is True
+    assert exact_ot["ot_method"] == "exact"
+    assert exact_ot["ot_sampling_strategy"] == "assignment"
+    for config in (no_ot, exact_ot):
+        assert config["epochs"] == 500
+        assert config["batch_size"] == 128
+        assert config["save_every"] == 25
+        assert config["target_lead_indices"] == [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+
+
 def test_cfm_compare_rejects_region_weight_and_minibatch_ot():
     cfm_path, _ = _config_paths()
     with pytest.raises(ValueError, match="region_weight=0"):

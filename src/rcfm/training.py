@@ -116,8 +116,6 @@ def run_training(args, dataset_builder: Callable) -> None:
         raise ValueError("experiment_role must be canonical or path_ablation")
     if model_family == "CFM" and float(args.region_weight) != 0.0:
         raise ValueError("CFM compare requires region_weight=0")
-    if model_family == "CFM" and bool(args.use_minibatch_ot):
-        raise ValueError("CFM compare requires minibatch OT to be disabled")
     if args.validation_interval_epochs <= 0 or args.inference_steps <= 0:
         raise ValueError("validation interval and inference steps must be positive")
     heldout_role = getattr(args, "heldout_role", "validation")
@@ -148,17 +146,39 @@ def run_training(args, dataset_builder: Callable) -> None:
     target_lead_indices = parse_lead_indices(getattr(args, "target_lead_indices", None))
     if target_lead_indices is None and args.target_lead_index is not None:
         target_lead_indices = [int(args.target_lead_index)]
+    dataset_kwargs = {
+        "normalization_id": args.normalization_id,
+        "condition_lead_index": args.condition_lead_index,
+        "target_lead_index": args.target_lead_index,
+        "target_lead_indices": target_lead_indices,
+        "max_train_records": args.max_train_records,
+        "max_heldout_records": args.max_heldout_records,
+    }
+    region_mask_path = getattr(args, "region_mask_path", None)
+    region_mask_manifest = getattr(args, "region_mask_manifest", None)
+    mask_method = getattr(args, "mask_method", None) or (
+        "cached_target_ecg_r_peak_roi"
+        if args.region_weight > 0
+        else "cached_target_ecg_r_peak_roi_diagnostics_only"
+    )
+    if bool(region_mask_path) != bool(region_mask_manifest):
+        raise ValueError("--region_mask_path and --region_mask_manifest must be supplied together")
+    if region_mask_path:
+        dataset_kwargs.update(
+            {
+                "region_mask_path": region_mask_path,
+                "region_mask_manifest": region_mask_manifest,
+                "mask_method": mask_method,
+                "dataset_version": args.dataset_version,
+                "split_hash": args.split_hash,
+            }
+        )
     train_set, validation_set = dataset_builder(
         args.task,
         datasets,
         args.data_root,
         args.window_size,
-        normalization_id=args.normalization_id,
-        condition_lead_index=args.condition_lead_index,
-        target_lead_index=args.target_lead_index,
-        target_lead_indices=target_lead_indices,
-        max_train_records=args.max_train_records,
-        max_heldout_records=args.max_heldout_records,
+        **dataset_kwargs,
     )
     normalization = dict(train_set.normalization_metadata)
     normalization.update(
@@ -208,7 +228,11 @@ def run_training(args, dataset_builder: Callable) -> None:
             "modality": args.task.split("2", maxsplit=1)[0],
             "model_family": model_family,
             "comparison_role": (
-                "preprocessing_matched_cfm_control"
+                (
+                    "preprocessing_matched_cfm_ot_ablation"
+                    if args.use_minibatch_ot
+                    else "preprocessing_matched_cfm_control"
+                )
                 if model_family == "CFM"
                 else (
                     f"historical_{args.flow_matcher}_path_ablation"
@@ -219,14 +243,14 @@ def run_training(args, dataset_builder: Callable) -> None:
             "coupling_location": (
                 "external_rcfm_single_coupling"
                 if experiment_role == "path_ablation" and args.flow_matcher == "sb"
-                else ("external_rcfm" if args.use_minibatch_ot else "none")
+                else (
+                    ("external_cfm" if model_family == "CFM" else "external_rcfm")
+                    if args.use_minibatch_ot
+                    else "none"
+                )
             ),
             "heldout_role": heldout_role,
-            "mask_method": (
-                "cached_target_ecg_r_peak_roi"
-                if args.region_weight > 0
-                else "cached_target_ecg_r_peak_roi_diagnostics_only"
-            ),
+            "mask_method": mask_method,
             "mask_usage": (
                 "training_loss_and_diagnostics"
                 if args.region_weight > 0
@@ -234,6 +258,11 @@ def run_training(args, dataset_builder: Callable) -> None:
             ),
         }
     )
+    mask_provenance = getattr(train_set, "region_mask_provenance", None)
+    if region_mask_path:
+        if not isinstance(mask_provenance, dict):
+            raise RuntimeError("external mask dataset did not expose validated provenance")
+        resolved["region_mask_provenance"] = mask_provenance
     condition_net = ConditionNet().to(device)
     flow_network = DiffusionUNetCrossAttention(
         signal_length,
@@ -332,7 +361,11 @@ def run_training(args, dataset_builder: Callable) -> None:
                 "path_ablation_rcfm"
                 if experiment_role == "path_ablation"
                 else (
-                    "canonical_multistep_cfm"
+                    (
+                        "canonical_multistep_cfm_ot"
+                        if bool(args.use_minibatch_ot)
+                        else "canonical_multistep_cfm"
+                    )
                     if model_family == "CFM"
                     else "canonical_multistep_rcfm"
                 )

@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from scripts.evaluate_cpsc_clinical_agreement import (
+    AMPLITUDE_PARAMETERS,
     _agreement_row,
     _count_summary,
     _record_pairs,
@@ -28,3 +29,13 @@ def test_nn_count_audit_reports_short_window_density_without_hrv_values():
     result = _count_summary([3, 4, 5, 9])
     assert result["median"] == 4.5
     assert result["fraction_at_least_5_rr"] == pytest.approx(0.5)
+
+
+def test_cpsc_clinical_protocol_includes_qrs_peak_to_peak():
+    assert "qrs_peak_to_peak_amplitude" in AMPLITUDE_PARAMETERS
+
+
+def test_cpsc_cfm_ot_label_is_available():
+    from scripts.evaluate_cpsc_clinical_agreement import MODEL_LABELS
+
+    assert MODEL_LABELS["cfm_ot"] == "CFM+OT"

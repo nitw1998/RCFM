@@ -28,8 +28,17 @@ from src.rcfm.baselines.cat_checkpoint import (
     load_cat_checkpoint,
     save_cat_checkpoint,
 )
-from src.rcfm.baselines.cat_data import MIMIC_DATASET_VERSION, MIMIC_SPLIT_HASH, load_mimic_cat_datasets
-from src.rcfm.baselines.catransformer import CATLoss, CATransformer
+from src.rcfm.baselines.cat_data import (
+    CPSC2018_SPLIT_HASH,
+    MIMIC_DATASET_VERSION,
+    MIMIC_SPLIT_HASH,
+    MMECG_SPLIT_HASH,
+    OTHER_11_LEADS,
+    PTBXL_SPLIT_HASH,
+    WESAD_SPLIT_HASH,
+    load_cat_datasets,
+)
+from src.rcfm.baselines.catransformer import CATECGAdapter, CATLoss, CATransformer
 from src.rcfm.checkpoint import capture_rng_states, restore_rng_states
 from src.rcfm.experiment import RunArtifacts, WandbLogger
 from src.rcfm.runtime import exception_summary, gradients_are_finite
@@ -48,6 +57,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--split_hash", default=None)
     parser.add_argument("--normalization_id", default=None)
     parser.add_argument("--alignment_id", default=None)
+    parser.add_argument("--condition_lead", default=None)
+    parser.add_argument("--target_lead", default=None)
+    parser.add_argument("--condition_lead_index", type=int, default=None)
+    parser.add_argument("--target_lead_indices", type=int, nargs="+", default=None)
+    parser.add_argument("--heldout_split", choices=("val", "test"), default="test")
+    parser.add_argument("--output_channels", type=int, default=1)
     parser.add_argument("--window_size", type=int, default=4)
     parser.add_argument("--sampling_rate", type=int, default=128)
     parser.add_argument("--expected_train_windows", type=int, default=8400)
@@ -106,18 +121,67 @@ def parse_args_with_config(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def validate_config(args: argparse.Namespace) -> None:
-    expected = {
-        "task": "ppg2ecg", "datasets": "MIMIC-AFib", "dataset_version": MIMIC_DATASET_VERSION,
-        "split_hash": MIMIC_SPLIT_HASH, "normalization_id": "rddm_window_minmax_neg1_1_v1",
-        "alignment_id": "paired_array_row_rddm_contract_zero_ppg_qc_v1",
-        "window_size": 4, "sampling_rate": 128, "expected_train_windows": 8400,
-        "expected_test_windows": 1800, "heldout_role": "upstream_test_final_only",
-        "reproduction_label": "CAT-PPG (reproduced)", "cycle_source": "source_ppg_fft_only",
-        "nfe": 1, "cat_layers": 2, "top_k": 2, "encoder_layers": 4,
+    common = {"window_size": 4, "sampling_rate": 128, "nfe": 1,
+              "cat_layers": 2, "top_k": 2, "encoder_layers": 4}
+    protocols = {
+        ("ppg2ecg", "MIMIC-AFib"): {
+            "dataset_version": MIMIC_DATASET_VERSION, "split_hash": MIMIC_SPLIT_HASH,
+            "normalization_id": "rddm_window_minmax_neg1_1_v1",
+            "alignment_id": "paired_array_row_rddm_contract_zero_ppg_qc_v1",
+            "expected_train_windows": 8400, "expected_test_windows": 1800,
+            "heldout_split": "test", "heldout_role": "upstream_test_final_only",
+            "reproduction_label": "CAT-PPG (reproduced)",
+            "cycle_source": "source_ppg_fft_only", "output_channels": 1,
+        },
+        ("ppg2ecg", "WESAD"): {
+            "dataset_version": "wesad-subject-fold1-linear-resample-window-minmax-v1",
+            "split_hash": WESAD_SPLIT_HASH, "normalization_id": "window_minmax_neg1_1_v1",
+            "alignment_id": "native_common_start_same_window_no_delay_correction_subject_fold1_v1",
+            "expected_train_windows": 17494, "expected_test_windows": 4213,
+            "heldout_split": "test", "heldout_role": "upstream_test_final_only",
+            "reproduction_label": "CAT-PPG (reproduced)",
+            "cycle_source": "source_bvp_fft_only", "output_channels": 1,
+        },
+        ("rcg2ecg", "mmECG"): {
+            "dataset_version": "mmecg-public-20221108-subject-split-window-minmax-v1",
+            "split_hash": MMECG_SPLIT_HASH, "normalization_id": "window_minmax_neg1_1_v1",
+            "alignment_id": "same_record_same_window_no_additional_phase_correction_subject_split_v1",
+            "expected_train_windows": 9590, "expected_test_windows": 2877,
+            "heldout_split": "test", "heldout_role": "upstream_test_final_only",
+            "reproduction_label": "CAT-RCG (adapted)",
+            "cycle_source": "source_rcg_fft_only", "output_channels": 1,
+        },
+        ("ecg2ecg", "PTBXL"): {
+            "dataset_version": "ptbxl-1.0.1-official-folds-record-minmax-neg1-1-v1",
+            "split_hash": PTBXL_SPLIT_HASH, "normalization_id": "record_minmax_neg1_1_v1",
+            "alignment_id": "ptbxl_official_folds_first4s_same_record_lead_II_to_other11_v1",
+            "expected_train_windows": 17440, "expected_test_windows": 2193,
+            "heldout_split": "val", "heldout_role": "validation_endpoint_only",
+            "reproduction_label": "CAT-ECG (adapted)",
+            "cycle_source": "source_ecg_lead_II_fft_only", "output_channels": 11,
+        },
+        ("ecg2ecg", "CPSC2018"): {
+            "dataset_version": "cpsc2018-source-derived-all12lead-qc-v3-record-minmax-neg1-1",
+            "split_hash": CPSC2018_SPLIT_HASH, "normalization_id": "record_minmax_neg1_1_v1",
+            "alignment_id": "same_record_simultaneous_channels_first_4s_lead_II_to_other_11_v3",
+            "expected_train_windows": 5487, "expected_test_windows": 686,
+            "heldout_split": "val", "heldout_role": "validation_endpoint_only",
+            "reproduction_label": "CAT-ECG (adapted)",
+            "cycle_source": "source_ecg_lead_II_fft_only", "output_channels": 11,
+        },
     }
+    protocol = protocols.get((args.task, args.datasets))
+    if protocol is None:
+        raise ValueError("unsupported CAT dataset/task protocol")
+    expected = {**common, **protocol}
     changed = [name for name, value in expected.items() if getattr(args, name) != value]
     if changed:
-        raise ValueError("CAT MIMIC frozen protocol fields changed: " + ", ".join(changed))
+        raise ValueError("CAT frozen protocol fields changed: " + ", ".join(changed))
+    if args.task == "ecg2ecg":
+        if args.condition_lead_index != 1 or args.target_lead_indices != OTHER_11_LEADS:
+            raise ValueError("CAT-ECG requires lead II to the other 11 leads")
+    elif args.condition_lead_index is not None or args.target_lead_indices is not None:
+        raise ValueError("single-source CAT must not declare ECG lead indices")
     positive = (
         "patch_width", "d_model", "n_heads", "ff_dim", "kl_temperature", "epochs",
         "batch_size", "learning_rate", "save_every", "log_interval_steps", "grad_clip",
@@ -150,10 +214,9 @@ def _git_state() -> tuple[str, bool, str]:
     return commit, bool(status.strip()), status
 
 
-def _model(args: argparse.Namespace) -> CATransformer:
-    return CATransformer(
+def _model(args: argparse.Namespace) -> torch.nn.Module:
+    kwargs = dict(
         input_length=args.window_size * args.sampling_rate,
-        output_channels=1,
         cat_layers=args.cat_layers,
         top_k=args.top_k,
         patch_width=args.patch_width,
@@ -163,12 +226,17 @@ def _model(args: argparse.Namespace) -> CATransformer:
         ff_dim=args.ff_dim,
         dropout=args.dropout,
     )
+    if args.reproduction_label == "CAT-ECG (adapted)":
+        return CATECGAdapter(output_channels=args.output_channels, **kwargs)
+    return CATransformer(output_channels=1, **kwargs)
 
 
 RESUME_MATCH_FIELDS = (
     "task", "datasets", "dataset_version", "split_hash", "normalization_id",
     "alignment_id", "window_size", "sampling_rate", "expected_train_windows",
     "expected_test_windows", "heldout_role", "reproduction_label", "cycle_source",
+    "condition_lead", "target_lead", "condition_lead_index", "target_lead_indices",
+    "heldout_split", "output_channels",
     "nfe", "cat_layers", "top_k", "patch_width", "d_model", "n_heads",
     "encoder_layers", "ff_dim", "dropout", "kl_weight", "kl_temperature",
     "batch_size", "learning_rate", "weight_decay", "grad_clip", "amp", "seed",
@@ -202,13 +270,11 @@ def train(args: argparse.Namespace) -> Path:
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA device requested but unavailable")
-    train_set, test_set, normalization = load_mimic_cat_datasets(
-        args.data_root, args.max_train_records, args.max_test_records
-    )
+    train_set, test_set, normalization = load_cat_datasets(args)
     expected_train = min(args.expected_train_windows, args.max_train_records or args.expected_train_windows)
     expected_test = min(args.expected_test_windows, args.max_test_records or args.expected_test_windows)
     if len(train_set) != expected_train or len(test_set) != expected_test:
-        raise ValueError("CAT data sizes disagree with the frozen MIMIC protocol")
+        raise ValueError("CAT data sizes disagree with the frozen protocol")
     generator = torch.Generator().manual_seed(args.seed)
     loader = DataLoader(
         train_set, batch_size=args.batch_size, shuffle=True, generator=generator,
@@ -251,8 +317,8 @@ def train(args: argparse.Namespace) -> Path:
     )
     logger = WandbLogger(args.wandb_mode, run_dir, resolved, args.wandb_project,
                          args.wandb_group, args.wandb_job_type, run_id)
-    output_spec = {"channels": 1, "length": 512, "sampling_rate_hz": 128,
-                   "target_lead": "upstream_artifact_ecg_channel"}
+    output_spec = {"channels": args.output_channels, "length": 512,
+                   "sampling_rate_hz": 128, "target_lead": args.target_lead}
 
     def checkpoint(epoch: int, label: str) -> None:
         payload = {
@@ -265,7 +331,11 @@ def train(args: argparse.Namespace) -> Path:
             "provenance": {"git_commit": commit, "git_dirty": dirty,
                            "command": shlex.join(sys.argv),
                            "paper_doi": "10.1109/JBHI.2024.3482853",
-                           "implementation_status": "independent_paper_based_reproduction"},
+                           "implementation_status": (
+                               "independent_paper_based_adaptation"
+                               if args.reproduction_label in {"CAT-ECG (adapted)", "CAT-RCG (adapted)"}
+                               else "independent_paper_based_reproduction"
+                           )},
         }
         path = run_dir / f"checkpoint_{label}.pt"
         save_cat_checkpoint(payload, path)
@@ -352,4 +422,4 @@ def train(args: argparse.Namespace) -> Path:
 
 if __name__ == "__main__":
     output = train(parse_args_with_config())
-    print(f"CAT-PPG training complete: {output}")
+    print(f"CAT training complete: {output}")

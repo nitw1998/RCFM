@@ -11,11 +11,22 @@ repositories. A DOI-based GitHub code search could not be completed because
 that API endpoint required authentication. These search results do not prove
 that no author implementation exists.
 
-The current executable experiment applies the architecture to the frozen local
-MIMIC-AFib paired artifact. It does not reproduce the paper's pooled five-data
-set, participant-level 80/20 split, five-fold protocol, or reported table
-values. `CAT-ECG (adapted)` and `CAT-RCG (adapted)` are reserved names for
-future source-modality adaptations and are not implemented by this entry.
+The executable experiments apply the architecture to frozen local MIMIC-AFib
+and WESAD PPG-to-ECG artifacts. They do not reproduce the paper's pooled
+five-data set, participant-level 80/20 split, five-fold protocol, or reported
+table values. PTB-XL and CPSC2018 use a separately labelled `CAT-ECG (adapted)`
+entry: Lead II alone drives source-only cycle extraction, and an explicit
+learned pointwise head maps the paper's single-channel CAT output to the other
+11 leads. That head is `adaptation-required`, is not paper-explicit, and must
+not be described as part of the official or reproduced CAT architecture. A
+shared CAT backbone plus this output head, rather than 11 independent CAT
+networks, is an `author-choice` that keeps the comparator's resource cost
+within the same order as the original single-output model.
+
+MMECG is separately labelled `CAT-RCG (adapted)`. It retains the paper's
+single-input/single-output architecture but substitutes energy-weighted RCG
+for PPG; dominant cycles are extracted from RCG only. This modality change is
+`adaptation-required`, not a reproduction of the paper's PPG experiment.
 
 ## Paper-to-code traceability
 

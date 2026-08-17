@@ -27,17 +27,89 @@ class ECGMambaFormerInference(nn.Module):
             {"diag": diag_decoder, "semantic": semantic_decoder}
         )
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def diagnostic_logits_from_features(self, features: torch.Tensor) -> torch.Tensor:
         """Return diagnostic logits before the checkpoint decoder's sigmoid."""
 
-        features = self.encoder(inputs)
         decoder = self.decoders["diag"]
         values = decoder.c(features)
         values = torch.cat([decoder.avg_a(values), decoder.avg_m(values)], dim=1)
         return decoder.fc[:-1](values.flatten(1).contiguous())
 
+    def semantic_logits_from_features(self, features: torch.Tensor) -> torch.Tensor:
+        """Return dense semantic logits before the decoder's softmax."""
+
+        decoder = self.decoders["semantic"]
+        return decoder.layer[:-1](features)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self.diagnostic_logits_from_features(self.encoder(inputs))
+
+    def semantic_logits(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self.semantic_logits_from_features(self.encoder(inputs))
+
     def semantic_probabilities(self, inputs: torch.Tensor) -> torch.Tensor:
-        return self.decoders["semantic"](self.encoder(inputs))
+        return torch.softmax(self.semantic_logits(inputs), dim=1)
+
+
+def ecgmamba_task_head_gradcam(
+    model: ECGMambaFormerInference,
+    inputs: torch.Tensor,
+    *,
+    task: str,
+    diagnostic_target_indices: tuple[int, ...] = (),
+) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
+    """Compute full-resolution Grad-CAM from one ECGMamba task-head score."""
+
+    if inputs.ndim != 3 or inputs.shape[0] != 1:
+        raise ValueError("inputs must have shape (1, channels, time)")
+    if task not in {"diag", "semantic"}:
+        raise ValueError("task must be diag or semantic")
+    model.zero_grad(set_to_none=True)
+    features = model.encoder(inputs)
+    if features.ndim != 3 or features.shape[0] != 1:
+        raise ValueError("ECGMamba encoder must return shape (1, channels, time)")
+    features.retain_grad()
+
+    if task == "diag":
+        indices = tuple(int(index) for index in diagnostic_target_indices)
+        if not indices or len(set(indices)) != len(indices) or min(indices) < 0:
+            raise ValueError("diagnostic targets must be nonempty, unique, and nonnegative")
+        outputs = model.diagnostic_logits_from_features(features)
+        if outputs.ndim != 2 or max(indices) >= outputs.shape[1]:
+            raise IndexError("diagnostic target exceeds the head width")
+        score = outputs[0, list(indices)].mean()
+        target = {"diagnostic_target_indices": list(indices)}
+    else:
+        outputs = model.semantic_logits_from_features(features)
+        if outputs.ndim != 3 or outputs.shape[1] != 4:
+            raise ValueError("semantic head must return background/P/QRS/T logits")
+        predicted = outputs.detach().argmax(dim=1)
+        class_scores = []
+        present_classes = []
+        for class_index in (1, 2, 3):
+            support = predicted[0] == class_index
+            if bool(support.any()):
+                class_scores.append(outputs[0, class_index, support].mean())
+                present_classes.append(class_index)
+        if not class_scores:
+            raise ValueError("semantic head predicts no P/QRS/T foreground")
+        score = torch.stack(class_scores).mean()
+        target = {
+            "semantic_target_classes": present_classes,
+            "semantic_target_rule": "mean pre-softmax class logit on own argmax support",
+        }
+
+    score.backward()
+    if features.grad is None:
+        raise RuntimeError("task-head score did not produce encoder gradients")
+    weights = features.grad.mean(dim=-1, keepdim=True)
+    cam = torch.relu((weights * features).sum(dim=1))[0]
+    cam_array = cam.detach().cpu().numpy().astype(np.float32, copy=False)
+    output_array = outputs[0].detach().cpu().numpy().astype(np.float32, copy=False)
+    if not np.all(np.isfinite(cam_array)) or not np.all(np.isfinite(output_array)):
+        raise ValueError("ECGMamba task-head Grad-CAM contains nonfinite values")
+    target["score"] = float(score.detach().cpu())
+    return cam_array, output_array, target
 
 
 def diagnostic_class_names(scp_statements_path: Path) -> list[str]:

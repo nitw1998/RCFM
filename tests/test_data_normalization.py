@@ -607,6 +607,27 @@ def test_ecg_smoke_caps_apply_after_full_train_normalization(tmp_path, monkeypat
     assert train_set.normalization_metadata["target_mean"] == pytest.approx(3.0)
 
 
+def test_ecg_loader_broadcasts_one_temporal_cached_mask_to_all_target_leads(tmp_path):
+    dataset_root = tmp_path / "synthetic"
+    dataset_root.mkdir()
+    rng = np.random.default_rng(17)
+    np.save(dataset_root / "X_train_resampled.npy", rng.normal(size=(3, 128, 12)).astype(np.float32))
+    np.save(dataset_root / "X_val_resampled.npy", rng.normal(size=(2, 128, 12)).astype(np.float32))
+    masks = np.linspace(0, 1, 3 * 128, dtype=np.float32).reshape(3, 1, 128)
+
+    train_set, heldout_set = get_ecg2ecg_datasets(
+        DATA_PATH=str(tmp_path), datasets=["synthetic"], window_size=1,
+        condition_lead=1, target_lead=[0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        region_masks_train=masks, max_train_records=2,
+    )
+
+    returned = train_set[0][2]
+    assert returned.shape == (11, 128)
+    np.testing.assert_array_equal(returned[0], masks[0, 0])
+    np.testing.assert_array_equal(returned[-1], masks[0, 0])
+    assert len(heldout_set[0]) == 2
+
+
 @pytest.mark.parametrize("field", ["max_train_records", "max_heldout_records"])
 def test_ecg_smoke_caps_must_be_positive(tmp_path, field):
     kwargs = {field: 0}

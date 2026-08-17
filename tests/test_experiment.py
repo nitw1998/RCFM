@@ -161,9 +161,13 @@ def test_all_cpsc_flow_training_configs_use_lead_ii_to_joint_other_eleven_protoc
     expected_leads = [
         "I", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"
     ]
-    paths = sorted(path for path in config_root.glob("*.yaml") if not path.name.startswith("rddm_"))
+    paths = sorted(
+        path
+        for path in config_root.glob("*.yaml")
+        if path.name.startswith(("cfm_", "rcfm_"))
+    )
 
-    assert len(paths) == 6
+    assert len(paths) == 7
     for path in paths:
         config = json.loads(path.read_text(encoding="utf-8"))
         assert config["condition_lead"] == "II"

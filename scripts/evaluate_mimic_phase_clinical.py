@@ -45,6 +45,7 @@ PARAMETERS = (
     "qtc_ms",
     "p_amplitude",
     "r_amplitude",
+    "qrs_peak_to_peak_amplitude",
     "t_amplitude",
     "st_deviation",
 )
@@ -59,6 +60,7 @@ INTERVAL_PARAMETERS = {
 AMPLITUDE_PARAMETERS = {
     "p_amplitude",
     "r_amplitude",
+    "qrs_peak_to_peak_amplitude",
     "t_amplitude",
     "st_deviation",
 }
@@ -71,6 +73,7 @@ DISPLAY_NAMES = {
     "qtc_ms": "QTc interval",
     "p_amplitude": "P amplitude",
     "r_amplitude": "R amplitude",
+    "qrs_peak_to_peak_amplitude": "QRS peak-to-peak",
     "t_amplitude": "T amplitude",
     "st_deviation": "ST deviation",
 }
@@ -127,6 +130,11 @@ def _record_measurement(signal: np.ndarray, sampling_rate: float) -> dict[str, o
         "summary": summary,
         "p_wave_status": measurement["p_wave_status"],
         "hrv_status": measurement["hrv"]["status"],
+        "rr_intervals_ms": (
+            np.diff(centered_fiducials.r_peaks[centered_fiducials.r_peaks >= 0])
+            * 1000.0
+            / sampling_rate
+        ).tolist(),
     }
 
 
@@ -207,6 +215,7 @@ def _agreement_record(
     parameter: str,
     reference: np.ndarray,
     generated: np.ndarray,
+    inference_status: str = "descriptive_only_no_subject_ids",
 ) -> dict[str, object]:
     unit = INTERVAL_PARAMETERS.get(parameter, "normalized")
     base = {
@@ -216,7 +225,7 @@ def _agreement_record(
         "unit": unit,
         "physical_amplitude_claim_allowed": parameter not in AMPLITUDE_PARAMETERS,
         "n": int(reference.size),
-        "inference_status": "descriptive_only_no_subject_ids",
+        "inference_status": inference_status,
     }
     if reference.size < 2:
         return {**base, "status": "insufficient_pairs"}
@@ -314,7 +323,7 @@ def _plot_bland_altman(
     pairs: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]],
 ) -> list[Path]:
     colors = {"unshifted": "#6f7782", "oracle_aligned": "#c43d4b"}
-    figure, axes = plt.subplots(2, 5, figsize=(18, 7.5), constrained_layout=True)
+    figure, axes = plt.subplots(3, 4, figsize=(14, 10), constrained_layout=True)
     for axis, parameter in zip(axes.flat, PARAMETERS):
         for phase_mode in PHASE_MODES:
             reference, generated = pairs[(phase_mode, parameter)]
@@ -334,6 +343,8 @@ def _plot_bland_altman(
         axis.set_xlabel(f"Pair mean ({unit})")
         axis.set_ylabel(f"Generated - real ({unit})")
         axis.grid(alpha=0.2)
+    for axis in axes.flat[len(PARAMETERS) :]:
+        axis.set_visible(False)
     handles, labels = axes.flat[0].get_legend_handles_labels()
     if handles:
         axes.flat[0].legend(handles, labels, frameon=False, fontsize=8)
@@ -356,7 +367,7 @@ def run(args: argparse.Namespace) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     with np.load(args.phase_predictions, allow_pickle=False) as artifact:
         required = {"targets"}
-        for model in MODELS:
+        for model in args.models:
             required.update(
                 {f"{model}_unshifted_predictions", f"{model}_oracle_aligned_predictions"}
             )
@@ -368,7 +379,7 @@ def run(args: argparse.Namespace) -> Path:
             (model, phase_mode): np.asarray(
                 artifact[f"{model}_{phase_mode}_predictions"], dtype=np.float32
             )
-            for model in MODELS
+            for model in args.models
             for phase_mode in PHASE_MODES
         }
     expected_shape = (1800, 1, 480)
@@ -393,7 +404,7 @@ def run(args: argparse.Namespace) -> Path:
     waveform_results: dict[str, dict[str, object]] = {}
     delineation_results: dict[str, dict[str, object]] = {}
     plot_paths: list[Path] = []
-    for model in MODELS:
+    for model in args.models:
         plot_pairs: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
         waveform_results[model] = {}
         delineation_results[model] = {}
@@ -446,7 +457,12 @@ def run(args: argparse.Namespace) -> Path:
             ):
                 summary_rows.append(
                     _agreement_record(
-                        model, phase_mode, parameter, reference, generated_values
+                        model,
+                        phase_mode,
+                        parameter,
+                        reference,
+                        generated_values,
+                        inference_status=args.inference_status,
                     )
                 )
                 plot_pairs[(phase_mode, parameter)] = (reference, generated_values)
@@ -484,6 +500,7 @@ def run(args: argparse.Namespace) -> Path:
                         "amplitude_claim_allowed": False,
                         "hrv_status": "blocked_non_continuous_and_insufficient_duration",
                         "p_wave_policy": "exploratory_algorithmic_delineation_without_certified_AF_labels",
+                        "models": list(args.models),
                     },
                     "waveform_agreement": waveform_results,
                     "delineation": delineation_results,
@@ -497,6 +514,12 @@ def run(args: argparse.Namespace) -> Path:
     )
     outputs = [summary_path, per_record_path, summary_json_path, *plot_paths]
     protocol_path = output_dir / "protocol.json"
+    identity_manifest = None
+    if args.identity_manifest is not None:
+        identity_manifest = {
+            "path": str(args.identity_manifest.resolve()),
+            "sha256": _sha256(args.identity_manifest),
+        }
     protocol = {
         "schema_version": 1,
         "status": "completed",
@@ -505,6 +528,7 @@ def run(args: argparse.Namespace) -> Path:
         "input": {
             "path": str(args.phase_predictions.resolve()),
             "sha256": _sha256(args.phase_predictions),
+            "identity_manifest": identity_manifest,
         },
         "execution": {
             "python": platform.python_version(),
@@ -516,7 +540,8 @@ def run(args: argparse.Namespace) -> Path:
         },
         "claim_boundary": (
             "Oracle target-informed phase correction is diagnostic only. Four-second normalized "
-            "windows have no physical amplitude inverse, subject IDs, continuity, or certified AF labels."
+            "windows have no physical amplitude inverse or continuity. Subject identity and AF labels "
+            "are used only when a verified identity manifest is explicitly supplied."
         ),
         "outputs": [path.name for path in outputs],
         "artifact_sha256": {path.name: _sha256(path) for path in outputs},
@@ -534,6 +559,18 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--sampling_rate", type=float, default=128.0)
     parser.add_argument("--max_lag_samples", type=int, default=16)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=list(MODELS),
+        help="Artifact model prefixes (default: cfm rcfm rcfm_ot rddm)",
+    )
+    parser.add_argument("--identity_manifest", type=Path)
+    parser.add_argument(
+        "--inference_status",
+        default="descriptive_only_no_subject_ids",
+        help="Explicit provenance label copied to parameter rows",
+    )
     return parser
 
 

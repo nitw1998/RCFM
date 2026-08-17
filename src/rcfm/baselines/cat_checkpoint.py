@@ -25,13 +25,24 @@ def validate_cat_checkpoint(payload: Mapping[str, object]) -> None:
     if payload["schema_version"] != 1 or payload["kind"] != CAT_CHECKPOINT_KIND:
         raise ValueError("invalid CAT checkpoint schema or kind")
     config = payload["config"]
-    if not isinstance(config, Mapping) or config.get("reproduction_label") != "CAT-PPG (reproduced)":
-        raise ValueError("CAT checkpoint must retain the independent reproduction label")
-    if config.get("cycle_source") != "source_ppg_fft_only" or int(config.get("nfe", -1)) != 1:
+    if not isinstance(config, Mapping):
+        raise ValueError("CAT checkpoint config must be a mapping")
+    label = config.get("reproduction_label")
+    allowed_cycles = {
+        "CAT-PPG (reproduced)": {"source_ppg_fft_only", "source_bvp_fft_only"},
+        "CAT-ECG (adapted)": {"source_ecg_lead_II_fft_only"},
+        "CAT-RCG (adapted)": {"source_rcg_fft_only"},
+    }
+    if label not in allowed_cycles:
+        raise ValueError("CAT checkpoint has an unknown reproduction/adaptation label")
+    if config.get("cycle_source") not in allowed_cycles[label] or int(config.get("nfe", -1)) != 1:
         raise ValueError("CAT checkpoint violates source-only deterministic inference")
     output = payload["output_spec"]
-    if not isinstance(output, Mapping) or int(output.get("channels", 0)) != 1 or int(output.get("length", 0)) != 512:
-        raise ValueError("MIMIC CAT checkpoint requires a single 512-sample ECG output")
+    expected_channels = 11 if label == "CAT-ECG (adapted)" else 1
+    if (not isinstance(output, Mapping) or
+            int(output.get("channels", 0)) != expected_channels or
+            int(output.get("length", 0)) != 512):
+        raise ValueError("CAT checkpoint output shape disagrees with its labelled protocol")
     if int(payload["epoch"]) <= 0 or int(payload["global_step"]) <= 0:
         raise ValueError("CAT checkpoint epoch and global_step must be positive")
     rng_states = payload["rng_states"]

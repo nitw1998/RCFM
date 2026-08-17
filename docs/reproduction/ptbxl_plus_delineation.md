@@ -84,3 +84,30 @@ is optimization-state continuation rather than bitwise minibatch-order
 continuation. Recoverable AMP overflow skips one optimizer update, lowers the
 scaler, and is logged; an external interrupt is recorded as
 `status=interrupted` with a nonempty exception summary.
+
+## Frozen fold-10 evaluation and visualization
+
+Select the checkpoint exclusively from fold 9, then evaluate it once on the
+official fold-10 windows. The evaluator verifies the dataset manifest,
+eligibility hash, waveform split hash, checkpoint kind, and selected epoch
+before inference. It saves aggregate CSV/JSON metrics and anonymous figures;
+it does not save record IDs, patient IDs, waveforms, probability arrays, or
+per-window metrics.
+
+```bash
+CUDA_VISIBLE_DEVICES=5 python scripts/evaluate_delineation_unet.py \
+  --checkpoint /path/to/checkpoint_best.pt \
+  --data_root /path/to/ptbxl_plus_delineation_limb_v1 \
+  --waveform_root /path/to/frozen/PTBXL \
+  --output_dir /path/outside/repository/fold10_evaluation \
+  --training_metrics /path/to/initial/metrics.csv /path/to/resume/metrics.csv
+```
+
+The region report contains Dice, IoU, precision, recall, and
+reference/predicted occupancy for P, QRS, and T masks. Fiducial timing uses
+the same validation-frozen threshold, local-maximum rule, and matching
+tolerance as training. Visualization examples are selected before inference
+at positions equally spaced among fold-10 windows with valid P/QRS/T
+supervision; they are not selected by model quality. All results remain
+agreement with algorithm-generated ECGdeli labels, not accuracy against
+manually adjudicated clinical ground truth.

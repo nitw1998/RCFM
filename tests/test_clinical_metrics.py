@@ -53,6 +53,9 @@ def test_known_intervals_qtc_amplitudes_and_st():
     np.testing.assert_allclose(parameters["qtc_ms"], [370, 370])
     np.testing.assert_allclose(parameters["p_amplitude"], [0.2, 0.2, 0.2])
     np.testing.assert_allclose(parameters["r_amplitude"], [1.0, 1.0, 1.0])
+    np.testing.assert_allclose(
+        parameters["qrs_peak_to_peak_amplitude"], [1.0, 1.0, 1.0]
+    )
     np.testing.assert_allclose(parameters["t_amplitude"], [0.3, 0.3, 0.3])
     np.testing.assert_allclose(parameters["st_deviation"], [0.1, 0.1, 0.1])
 
@@ -90,6 +93,7 @@ def test_normalized_amplitudes_are_blocked():
 
     assert result["amplitude_status"] == "blocked_requires_inverse_physical_units"
     assert result["parameters"]["r_amplitude"] == []
+    assert result["parameters"]["qrs_peak_to_peak_amplitude"] == []
     assert result["parameters"]["st_deviation"] == []
 
 
@@ -105,6 +109,9 @@ def test_normalized_amplitudes_require_explicit_exploratory_opt_in():
     assert result["amplitude_status"] == "exploratory_normalized_units_not_physical"
     assert not result["amplitude_claim_allowed"]
     np.testing.assert_allclose(result["parameters"]["r_amplitude"], [1.0, 1.0, 1.0])
+    np.testing.assert_allclose(
+        result["parameters"]["qrs_peak_to_peak_amplitude"], [1.0, 1.0, 1.0]
+    )
     np.testing.assert_allclose(result["parameters"]["st_deviation"], [0.1, 0.1, 0.1])
 
 

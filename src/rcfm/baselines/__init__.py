@@ -1,5 +1,9 @@
-"""Independent comparator implementations used by the RCFM revision."""
+"""Comparator models used in the reviewer experiments."""
 
-from .catransformer import CATLoss, CATransformer
+from .direct_cnn import DirectRegressionCNN
+from .catransformer import CATECGAdapter, CATLoss, CATransformer, CycleAwareTransformerBlock
 
-__all__ = ["CATLoss", "CATransformer"]
+__all__ = [
+    "CATECGAdapter", "CATLoss", "CATransformer", "CycleAwareTransformerBlock",
+    "DirectRegressionCNN",
+]

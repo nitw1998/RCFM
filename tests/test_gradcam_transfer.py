@@ -7,6 +7,7 @@ from src.rcfm.interpretability.gradcam import (
     covering_crop_starts,
     gradcam_1d,
     gradcam_native_multi_1d,
+    gradcam_native_multi_target_1d,
     normalize_soft_mask,
     project_cam_to_sample_grid,
     resample_mask_to_sample_grid,
@@ -69,6 +70,26 @@ def test_native_multi_layer_gradcam_preserves_each_feature_resolution():
     assert cams["features"].shape == (37,)
     assert logits.shape == (3,)
     assert all(np.all(np.isfinite(cam)) for cam in cams.values())
+
+
+def test_multi_target_gradcam_aggregates_known_positive_logits():
+    torch.manual_seed(11)
+    model = _TinyClassifier().eval()
+    inputs = torch.randn(1, 2, 37)
+
+    cams, logits = gradcam_native_multi_target_1d(
+        model,
+        {"features": model.features},
+        inputs,
+        target_indices=[0, 2],
+        reduction="mean",
+    )
+
+    assert cams["features"].shape == (37,)
+    assert logits.shape == (3,)
+    assert np.all(np.isfinite(cams["features"]))
+    with pytest.raises(ValueError, match="nonempty"):
+        gradcam_native_multi_target_1d(model, {"features": model.features}, inputs, [])
 
 
 def test_explicit_feature_centers_remove_half_bin_projection_shift():

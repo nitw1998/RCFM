@@ -15,6 +15,7 @@ from scripts.train_cat import (
 from src.rcfm.baselines.cat_checkpoint import load_cat_checkpoint, save_cat_checkpoint
 from src.rcfm.baselines.cat_cycle import CycleViewBuilder, SourceCycleExtractor
 from src.rcfm.baselines.catransformer import (
+    CATECGAdapter,
     CATLoss,
     CATransformer,
     CycleAwareTransformerBlock,
@@ -133,6 +134,21 @@ def test_cat_output_shape_determinism_diagnostics_and_leakage_guard():
     assert model.nfe == 1
 
 
+def test_cat_ecg_adapter_has_explicit_multilead_head_and_source_only_interface():
+    model = CATECGAdapter(
+        output_channels=11, input_length=64, cat_layers=2, top_k=2,
+        patch_width=8, d_model=16, n_heads=4, encoder_layers=1,
+        ff_dim=32, dropout=0.0,
+    ).eval()
+    output, diagnostics = model(torch.randn(2, 1, 64), return_diagnostics=True)
+    assert output.shape == (2, 11, 64)
+    assert model.output_head.kernel_size == (1,)
+    assert model.nfe == 1
+    assert diagnostics
+    with pytest.raises(TypeError):
+        model(torch.randn(2, 1, 64), target=torch.randn(2, 11, 64))
+
+
 def test_cat_loss_is_finite_and_backpropagates():
     model = _small_model().train()
     source = torch.randn(2, 1, 64)
@@ -188,6 +204,52 @@ def test_cat_checkpoint_roundtrip_retains_recovery_state(tmp_path: Path):
     )
 
 
+def test_cat_ecg_adaptation_checkpoint_label_and_shape_are_jointly_validated(tmp_path: Path):
+    model = _small_model()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    payload = {
+        "schema_version": 1, "kind": "independent_catransformer_reproduction",
+        "epoch": 1, "global_step": 1, "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(), "scaler_state": {},
+        "config": {"reproduction_label": "CAT-ECG (adapted)",
+                   "cycle_source": "source_ecg_lead_II_fft_only", "nfe": 1},
+        "normalization": {"method": "record_minmax"},
+        "output_spec": {"channels": 11, "length": 512},
+        "rng_states": capture_rng_states(),
+        "data_loader_generator_state": torch.Generator().manual_seed(31).get_state(),
+        "provenance": {"git_commit": "synthetic", "command": "pytest",
+                       "paper_doi": "10.1109/JBHI.2024.3482853",
+                       "implementation_status": "independent_paper_based_reproduction"},
+    }
+    save_cat_checkpoint(payload, tmp_path / "adapted.pt")
+    payload["output_spec"] = {"channels": 1, "length": 512}
+    with pytest.raises(ValueError, match="output shape"):
+        save_cat_checkpoint(payload, tmp_path / "wrong.pt")
+
+
+def test_cat_rcg_checkpoint_requires_source_rcg_and_single_output(tmp_path: Path):
+    model = _small_model()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    payload = {
+        "schema_version": 1, "kind": "independent_catransformer_reproduction",
+        "epoch": 1, "global_step": 1, "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(), "scaler_state": {},
+        "config": {"reproduction_label": "CAT-RCG (adapted)",
+                   "cycle_source": "source_rcg_fft_only", "nfe": 1},
+        "normalization": {"method": "window_minmax"},
+        "output_spec": {"channels": 1, "length": 512},
+        "rng_states": capture_rng_states(),
+        "data_loader_generator_state": torch.Generator().manual_seed(31).get_state(),
+        "provenance": {"git_commit": "synthetic", "command": "pytest",
+                       "paper_doi": "10.1109/JBHI.2024.3482853",
+                       "implementation_status": "independent_paper_based_adaptation"},
+    }
+    save_cat_checkpoint(payload, tmp_path / "rcg.pt")
+    payload["config"] = dict(payload["config"], cycle_source="source_ppg_fft_only")
+    with pytest.raises(ValueError, match="source-only"):
+        save_cat_checkpoint(payload, tmp_path / "wrong_source.pt")
+
+
 def test_resume_contract_rejects_architecture_change():
     config = Path(__file__).resolve().parents[1] / "configs/baselines/cat_ppg_mimic_afib_seed31.yaml"
     args = parse_args_with_config(["--config", str(config)])
@@ -197,3 +259,36 @@ def test_resume_contract_rejects_architecture_change():
     checkpoint["config"]["d_model"] = 64
     with pytest.raises(ValueError, match="d_model"):
         _validate_resume_contract(args, checkpoint)
+
+
+def test_cat_configs_freeze_reproduction_and_adaptation_labels():
+    root = Path(__file__).resolve().parents[1] / "configs"
+    cases = {
+        "ptbxl/cat_ecg_adapted_record_minmax_seed31.yaml": ("PTBXL", "CAT-ECG (adapted)", 11),
+        "cpsc2018/cat_ecg_adapted_record_minmax_seed31.yaml": ("CPSC2018", "CAT-ECG (adapted)", 11),
+        "wesad/cat_ppg_reproduced_window_minmax_seed31.yaml": ("WESAD", "CAT-PPG (reproduced)", 1),
+        "mmecg/cat_rcg_adapted_window_minmax_seed31.yaml": ("mmECG", "CAT-RCG (adapted)", 1),
+    }
+    for relative, (dataset, label, channels) in cases.items():
+        args = parse_args_with_config(["--config", str(root / relative)])
+        assert args.datasets == dataset
+        assert args.reproduction_label == label
+        assert args.output_channels == channels
+        assert args.nfe == 1
+        assert args.epochs == 500
+        assert args.batch_size == 128
+        assert args.save_every == 25
+        assert args.wandb_mode == "online"
+    for relative in (
+        "ptbxl/cat_ecg_adapted_record_minmax_seed31.yaml",
+        "cpsc2018/cat_ecg_adapted_record_minmax_seed31.yaml",
+    ):
+        args = parse_args_with_config(["--config", str(root / relative)])
+        assert args.condition_lead_index == 1
+        assert args.target_lead_indices == [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    mmecg = parse_args_with_config(
+        ["--config", str(root / "mmecg/cat_rcg_adapted_window_minmax_seed31.yaml")]
+    )
+    assert mmecg.task == "rcg2ecg"
+    assert mmecg.cycle_source == "source_rcg_fft_only"
+    assert mmecg.heldout_role == "upstream_test_final_only"

@@ -37,17 +37,23 @@ from src.rcfm.metrics.clinical import delineate_ecg, measure_ecg_parameters
 
 PARAMETERS = (
     "heart_rate_bpm", "rr_ms", "pr_ms", "qrs_ms", "qt_ms", "qtc_ms",
-    "p_amplitude", "r_amplitude", "t_amplitude", "st_deviation",
+    "p_amplitude", "r_amplitude", "qrs_peak_to_peak_amplitude", "t_amplitude", "st_deviation",
 )
 INTERVAL_PARAMETERS = ("rr_ms", "pr_ms", "qrs_ms", "qt_ms", "qtc_ms")
-AMPLITUDE_PARAMETERS = ("p_amplitude", "r_amplitude", "t_amplitude", "st_deviation")
+AMPLITUDE_PARAMETERS = (
+    "p_amplitude", "r_amplitude", "qrs_peak_to_peak_amplitude", "t_amplitude", "st_deviation"
+)
 PARAMETER_LABELS = {
     "heart_rate_bpm": "HR", "rr_ms": "RR", "pr_ms": "PR", "qrs_ms": "QRS",
     "qt_ms": "QT", "qtc_ms": "QTc", "p_amplitude": "P", "r_amplitude": "R",
-    "t_amplitude": "T", "st_deviation": "ST",
+    "qrs_peak_to_peak_amplitude": "QRS p-p", "t_amplitude": "T", "st_deviation": "ST",
 }
 MODEL_LABELS = {"cfm": "CFM", "rcfm": "RCFM", "rcfm_ot": "RCFM-OT", "rddm": "RDDM-ECG"}
 MODEL_COLORS = {"cfm": "#2878b5", "rcfm": "#2f8f5b", "rcfm_ot": "#c43d4b", "rddm": "#d17a00"}
+MODEL_LABELS["cfm_ot"] = "CFM+OT"
+MODEL_COLORS["cfm_ot"] = "#76a5d5"
+MODEL_LABELS["direct_cnn"] = "DirectCNN"
+MODEL_COLORS["direct_cnn"] = "#6f7782"
 
 
 def _configure_ieee_style() -> None:
@@ -205,8 +211,10 @@ def _plot_summary(waveform: Mapping[str, object], macro_rows: list[dict[str, obj
         (axes[0], correlations, "Waveform correlation\nmedian record Pearson", (0, 1)),
         (axes[1], loa, "Waveform Bland-Altman\n95% LoA width (normalized)", (0, max(loa) * 1.15)),
     ):
-        bars = axis.bar(np.arange(4), values, color=[MODEL_COLORS[item] for item in MODEL_ORDER], width=0.72)
-        axis.set_xticks(np.arange(4), [MODEL_LABELS[item] for item in MODEL_ORDER], rotation=30, ha="right")
+        bars = axis.bar(np.arange(len(MODEL_ORDER)), values,
+                        color=[MODEL_COLORS[item] for item in MODEL_ORDER], width=0.72)
+        axis.set_xticks(np.arange(len(MODEL_ORDER)), [MODEL_LABELS[item] for item in MODEL_ORDER],
+                        rotation=30, ha="right")
         axis.set_ylim(*ylim); axis.set_title(title); axis.grid(axis="y", alpha=0.2)
         for bar, value in zip(bars, values):
             axis.annotate(f"{value:.3f}", (bar.get_x() + bar.get_width() / 2, value), xytext=(0, 2),
@@ -237,7 +245,7 @@ def _plot_clinical(macro_rows: list[dict[str, object]], output: Path) -> list[Pa
 def _plot_bland_altman(pairs: Mapping[tuple[str, str], tuple[np.ndarray, np.ndarray]],
                        model: str, output: Path) -> list[Path]:
     _configure_ieee_style()
-    figure, axes = plt.subplots(2, 5, figsize=(7.16, 4.35), constrained_layout=True)
+    figure, axes = plt.subplots(3, 4, figsize=(7.16, 6.0), constrained_layout=True)
     for axis, parameter in zip(axes.flat, PARAMETERS):
         real, generated = pairs.get((model, parameter), (np.empty(0), np.empty(0)))
         if len(real) >= 2:
@@ -250,6 +258,8 @@ def _plot_bland_altman(pairs: Mapping[tuple[str, str], tuple[np.ndarray, np.ndar
         unit = "bpm" if parameter == "heart_rate_bpm" else ("ms" if parameter in INTERVAL_PARAMETERS else "normalized")
         axis.set_title(f"{PARAMETER_LABELS[parameter]} (n={len(real)})")
         axis.set_xlabel(f"Pair mean ({unit})"); axis.set_ylabel(f"Generated - real ({unit})"); axis.grid(alpha=0.16)
+    for axis in axes.flat[len(PARAMETERS) :]:
+        axis.set_visible(False)
     axes.flat[0].legend(frameon=False, loc="best")
     figure.suptitle(f"{MODEL_LABELS[model]} Lead I ECG-parameter Bland-Altman (record level)", fontsize=8.5)
     return _save_figure(figure, output)
@@ -265,19 +275,43 @@ def _count_summary(values: list[int]) -> dict[str, object]:
 
 
 def run(args: argparse.Namespace) -> Path:
+    global MODEL_ORDER
+    if args.models:
+        requested = tuple(item.strip() for item in args.models.split(",") if item.strip())
+        if not requested or any(item not in MODEL_LABELS for item in requested):
+            raise ValueError("unsupported CPSC2018 clinical model selection")
+        MODEL_ORDER = requested
     input_dir, output = args.input_dir.resolve(), args.output_dir.resolve()
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"refusing to overwrite nonempty output directory: {output}")
     output.mkdir(parents=True, exist_ok=True)
     source_protocol = json.loads((input_dir / "protocol.json").read_text(encoding="utf-8"))
-    if source_protocol.get("status") not in {"completed", "smoke_completed"} or source_protocol["protocol"].get("phase_correction_applied") is not False:
+    phase_applied = source_protocol["protocol"].get(
+        "phase_correction_applied",
+        source_protocol["protocol"].get("phase_correction_applied_to_primary"),
+    )
+    if phase_applied is None and source_protocol["protocol"].get("raw_full_window_primary") is True:
+        phase_applied = False
+    if source_protocol.get("status") not in {"completed", "smoke_completed"} or phase_applied is not False:
         raise ValueError("CPSC2018 clinical analysis requires completed raw, unshifted predictions")
-    with np.load(input_dir / "paired_reference.npz", allow_pickle=False) as artifact:
+    pair_path = input_dir / "paired_reference.npz"
+    if not pair_path.exists():
+        pair_path = input_dir / "paired_predictions.npz"
+    with np.load(pair_path, allow_pickle=False) as artifact:
         targets, record_ids = np.asarray(artifact["targets"], dtype=np.float32), np.asarray(artifact["record_ids"])
+        embedded_predictions = {
+            model: np.asarray(artifact[f"{model}_predictions"], dtype=np.float32)
+            for model in MODEL_ORDER
+            if f"{model}_predictions" in artifact.files
+        }
     count = len(targets) if args.max_records is None else min(args.max_records, len(targets))
     targets, record_ids = targets[:count], record_ids[:count]
-    predictions = {model: np.asarray(np.load(input_dir / f"{model}_predictions.npy", mmap_mode="r")[:count])
-                   for model in MODEL_ORDER}
+    predictions = {
+        model: embedded_predictions[model][:count]
+        if model in embedded_predictions
+        else np.asarray(np.load(input_dir / f"{model}_predictions.npy", mmap_mode="r")[:count])
+        for model in MODEL_ORDER
+    }
     executor = ProcessPoolExecutor(max_workers=args.workers) if args.workers > 1 else None
     rows, detail_rows, delineation = [], [], {}
     lead_i_pairs: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
@@ -372,6 +406,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--sampling_rate", type=float, default=128.0)
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--max_records", type=int, default=None)
+    parser.add_argument("--models", help="comma-separated model keys; defaults to the historical four-model set")
     return parser
 
 

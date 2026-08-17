@@ -172,6 +172,33 @@ class CATransformer(nn.Module):
         return values
 
 
+class CATECGAdapter(nn.Module):
+    """CAT backbone plus an explicit multi-lead ECG adaptation head."""
+
+    def __init__(self, output_channels: int, **cat_kwargs) -> None:
+        super().__init__()
+        if output_channels <= 1:
+            raise ValueError("CAT-ECG adaptation requires more than one output lead")
+        self.backbone = CATransformer(output_channels=1, **cat_kwargs)
+        self.output_channels = int(output_channels)
+        self.output_head = nn.Conv1d(1, self.output_channels, kernel_size=1)
+        self.nfe = 1
+
+    def forward(
+        self,
+        source: torch.Tensor,
+        source_mask: torch.Tensor | None = None,
+        return_diagnostics: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, Mapping[str, torch.Tensor]]:
+        values, diagnostics = self.backbone(
+            source, source_mask=source_mask, return_diagnostics=True
+        )
+        output = self.output_head(values)
+        if return_diagnostics:
+            return output, diagnostics
+        return output
+
+
 class CATLoss(nn.Module):
     """Equation (10), with an explicit softmax definition for P and Q."""
 

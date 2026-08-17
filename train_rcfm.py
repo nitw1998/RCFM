@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -42,6 +43,72 @@ def parse_lead_indices(value) -> list[int] | None:
     return indices
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _load_external_region_masks(
+    *,
+    mask_path: str,
+    manifest_path: str,
+    mask_method: str,
+    data_root: str,
+    dataset_name: str,
+    dataset_version: str,
+    split_hash: str,
+    window_size: int,
+) -> tuple[np.ndarray, dict[str, object]]:
+    array_path = Path(mask_path).resolve()
+    metadata_path = Path(manifest_path).resolve()
+    if not array_path.is_file() or not metadata_path.is_file():
+        raise FileNotFoundError("external region mask array and manifest must both exist")
+    manifest = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if manifest.get("status") != "completed" or manifest.get("schema_version") != 1:
+        raise ValueError("region-mask manifest must be a completed schema-version-1 artifact")
+    dataset = manifest.get("dataset", {})
+    mask = manifest.get("mask", {})
+    if dataset.get("dataset_version") != dataset_version:
+        raise ValueError("region-mask manifest dataset_version does not match the experiment")
+    if dataset.get("split_hash") != split_hash:
+        raise ValueError("region-mask manifest split_hash does not match the experiment")
+    if mask.get("method") != mask_method:
+        raise ValueError("region-mask manifest method does not match --mask_method")
+    if mask.get("file_name") != array_path.name:
+        raise ValueError("region-mask array file name does not match its manifest")
+    if bool(manifest.get("test_mask_generated", True)):
+        raise ValueError("region-mask artifact must explicitly state test_mask_generated=false")
+    if mask.get("sha256") != _sha256(array_path):
+        raise ValueError("region-mask array SHA-256 does not match its manifest")
+    source = dataset.get("source_ecg", {})
+    source_file_name = source.get("file_name")
+    if not isinstance(source_file_name, str) or Path(source_file_name).name != source_file_name:
+        raise ValueError("region-mask manifest source ECG file name is invalid")
+    source_path = Path(data_root).resolve() / dataset_name / source_file_name
+    if not source_path.is_file():
+        raise FileNotFoundError("region-mask source ECG training array is missing")
+    if source.get("file_name") != source_path.name or source.get("sha256") != _sha256(source_path):
+        raise ValueError("region-mask source ECG provenance does not match the training array")
+    masks = np.load(array_path, mmap_mode="r", allow_pickle=False)
+    expected_shape = tuple(int(value) for value in mask.get("shape", []))
+    if masks.shape != expected_shape or str(masks.dtype) != mask.get("dtype"):
+        raise ValueError("region-mask array shape/dtype does not match its manifest")
+    if len(masks) != int(dataset.get("train_records", -1)):
+        raise ValueError("region-mask row count does not match its manifest")
+    provenance = {
+        "method": mask_method,
+        "manifest_sha256": _sha256(metadata_path),
+        "array_sha256": mask["sha256"],
+        "source_ecg_sha256": source["sha256"],
+        "test_mask_generated": False,
+        "claim_boundary": manifest.get("claim_boundary"),
+    }
+    return masks, provenance
+
+
 def build_datasets(
     task: str,
     datasets: Iterable[str],
@@ -56,11 +123,35 @@ def build_datasets(
     heldout_split: str = "val",
     max_train_records: int | None = None,
     max_heldout_records: int | None = None,
+    return_region_mask_train: bool = True,
+    region_mask_path: str | None = None,
+    region_mask_manifest: str | None = None,
+    mask_method: str = "cached_target_ecg_r_peak_roi",
+    dataset_version: str | None = None,
+    split_hash: str | None = None,
 ):
+    dataset_names = list(datasets)
+    if region_mask_path is not None and len(dataset_names) != 1:
+        raise ValueError("external region masks currently require exactly one dataset")
     if task in {"ppg2ecg", "rcg2ecg"}:
-        return get_ppg2ecg_datasets(
+        masks = None
+        provenance = None
+        if region_mask_path is not None:
+            if task != "ppg2ecg" or region_mask_manifest is None:
+                raise ValueError("external Grad-CAM masks require ppg2ecg and a manifest")
+            masks, provenance = _load_external_region_masks(
+                mask_path=region_mask_path,
+                manifest_path=region_mask_manifest,
+                mask_method=mask_method,
+                data_root=data_root,
+                dataset_name=dataset_names[0],
+                dataset_version=str(dataset_version),
+                split_hash=str(split_hash),
+                window_size=window_size,
+            )
+        train_set, heldout_set = get_ppg2ecg_datasets(
             DATA_PATH=data_root,
-            datasets=list(datasets),
+            datasets=dataset_names,
             window_size=window_size,
             clean_condition_ppg=False,
             normalization_metadata=normalization_metadata,
@@ -68,8 +159,28 @@ def build_datasets(
             load_train=load_train,
             max_train_records=max_train_records,
             max_heldout_records=max_heldout_records,
+            return_region_mask_train=return_region_mask_train,
+            region_masks_train=masks,
         )
+        if train_set is not None and provenance is not None:
+            train_set.region_mask_provenance = provenance
+        return train_set, heldout_set
     if task == "ecg2ecg":
+        masks = None
+        provenance = None
+        if region_mask_path is not None:
+            if region_mask_manifest is None:
+                raise ValueError("external Grad-CAM masks require a manifest")
+            masks, provenance = _load_external_region_masks(
+                mask_path=region_mask_path,
+                manifest_path=region_mask_manifest,
+                mask_method=mask_method,
+                data_root=data_root,
+                dataset_name=dataset_names[0],
+                dataset_version=str(dataset_version),
+                split_hash=str(split_hash),
+                window_size=window_size,
+            )
         parsed_targets = parse_lead_indices(target_lead_indices)
         if parsed_targets is None and target_lead_index is not None:
             parsed_targets = [target_lead_index]
@@ -77,9 +188,9 @@ def build_datasets(
             raise ValueError("ecg2ecg requires condition lead and target lead indices")
         if condition_lead_index < 0:
             raise ValueError("ECG lead indices must be nonnegative")
-        return get_ecg2ecg_datasets(
+        train_set, heldout_set = get_ecg2ecg_datasets(
             DATA_PATH=data_root,
-            datasets=list(datasets),
+            datasets=dataset_names,
             window_size=window_size,
             condition_lead=condition_lead_index,
             target_lead=parsed_targets,
@@ -89,7 +200,12 @@ def build_datasets(
             heldout_split=heldout_split,
             max_train_records=max_train_records,
             max_heldout_records=max_heldout_records,
+            return_region_mask_train=return_region_mask_train,
+            region_masks_train=masks,
         )
+        if train_set is not None and provenance is not None:
+            train_set.region_mask_provenance = provenance
+        return train_set, heldout_set
     raise ValueError(f"Unknown task={task!r}")
 
 
@@ -159,6 +275,9 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sigma", type=float, default=0.0)
     parser.add_argument("--region_weight", type=float, default=0.01)
+    parser.add_argument("--region_mask_path", default=None)
+    parser.add_argument("--region_mask_manifest", default=None)
+    parser.add_argument("--mask_method", default=None)
     parser.add_argument("--use_minibatch_ot", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ot_method", choices=["exact", "sinkhorn", "unbalanced", "partial"], default="sinkhorn")
     parser.add_argument("--ot_reg", type=float, default=0.05)

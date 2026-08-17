@@ -1,6 +1,7 @@
 import numpy as np
 
 from scripts.evaluate_mimic_phase_clinical import (
+    PARAMETERS,
     _agreement_record,
     _parameter_pairs,
     _parameter_triplets,
@@ -38,6 +39,18 @@ def test_agreement_record_reports_generated_minus_reference():
     assert result["unit"] == "ms"
     assert result["bland_altman_bias"] == 5.0
     assert result["inference_status"] == "descriptive_only_no_subject_ids"
+
+
+def test_agreement_record_accepts_recovered_identity_boundary():
+    result = _agreement_record(
+        "cat",
+        "unshifted",
+        "rr_ms",
+        np.array([800.0, 900.0]),
+        np.array([810.0, 890.0]),
+        inference_status="descriptive_only_six_subjects_no_iid_inference",
+    )
+    assert result["inference_status"] == "descriptive_only_six_subjects_no_iid_inference"
 
 
 def test_parameter_triplets_freeze_same_rows_before_and_after_alignment():
@@ -85,3 +98,7 @@ def test_record_measurement_keeps_hrv_blocked_for_short_noncontinuous_window():
     assert result["summary"]["rr_ms"] == 1000.0
     assert result["summary"]["heart_rate_bpm"] == 60.0
     assert result["hrv_status"] == "blocked_non_continuous"
+
+
+def test_record_measurement_includes_qrs_peak_to_peak_amplitude():
+    assert "qrs_peak_to_peak_amplitude" in PARAMETERS

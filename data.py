@@ -335,6 +335,7 @@ class PairedSignalDataset(Dataset):
         clean_condition_ppg: bool = False,
         normalization_metadata: dict[str, object] | None = None,
         return_region_mask: bool = True,
+        cached_region_masks: np.ndarray | None = None,
         record_ids: np.ndarray | None = None,
         target_means: np.ndarray | None = None,
         target_scales: np.ndarray | None = None,
@@ -349,6 +350,8 @@ class PairedSignalDataset(Dataset):
         self.condition_signal = np.asarray(condition_signal, dtype=np.float32)
         self.normalization_metadata = normalization_metadata
         self.return_region_mask = return_region_mask
+        if cached_region_masks is not None and not return_region_mask:
+            raise ValueError("cached region masks require return_region_mask=True")
         zscore_values = (
             record_ids,
             target_means,
@@ -421,7 +424,28 @@ class PairedSignalDataset(Dataset):
             ).astype(np.float32)
 
         self.region_masks = None
-        if return_region_mask:
+        if cached_region_masks is not None:
+            masks = np.asarray(cached_region_masks, dtype=np.float32)
+            if masks.ndim == 2:
+                masks = masks[:, None, :]
+            target_channels = 1 if self.target_ecg.ndim == 2 else self.target_ecg.shape[1]
+            expected_shapes = {
+                (len(self.target_ecg), 1, self.target_ecg.shape[-1]),
+                (len(self.target_ecg), target_channels, self.target_ecg.shape[-1]),
+            }
+            if masks.shape not in expected_shapes:
+                raise ValueError(
+                    f"cached region masks have shape {masks.shape}; expected one of "
+                    f"{sorted(expected_shapes)}"
+                )
+            if not np.all(np.isfinite(masks)):
+                raise ValueError("cached region masks must contain only finite values")
+            if np.any(masks < 0) or np.any(masks > 1):
+                raise ValueError("cached region masks must be within [0, 1]")
+            self.region_masks = np.broadcast_to(
+                masks, (len(self.target_ecg), target_channels, self.target_ecg.shape[-1])
+            )
+        elif return_region_mask:
             masks = []
             for target in self.target_ecg:
                 target_channels = target[None, :] if target.ndim == 1 else target
@@ -461,12 +485,19 @@ def get_ppg2ecg_datasets(
     load_train: bool = True,
     max_train_records: int | None = None,
     max_heldout_records: int | None = None,
+    return_region_mask_train: bool = True,
+    region_masks_train: np.ndarray | None = None,
 ):
     """Load paired PPG/RCG-to-ECG windows.
 
     The mmECG preprocessed RCG arrays are stored with the historical ``ppg_*``
     file names, so the same loader is used for both PPG-to-ECG and RCG-to-ECG.
     """
+
+    if region_masks_train is not None and not load_train:
+        raise ValueError("training region masks cannot be supplied for inference-only loading")
+    if region_masks_train is not None and not return_region_mask_train:
+        raise ValueError("training region masks require return_region_mask_train=True")
 
     samples = SAMPLE_RATE * window_size
     root = Path(DATA_PATH)
@@ -504,15 +535,20 @@ def get_ppg2ecg_datasets(
         if load_train:
             train_target = _rddm_window_minmax_neg1_1(np.concatenate(train_ecg))
             train_source = _rddm_window_minmax_neg1_1(np.concatenate(train_condition))
+            train_masks = region_masks_train
             if max_train_records is not None:
                 train_target = train_target[:max_train_records]
                 train_source = train_source[:max_train_records]
+                if train_masks is not None:
+                    train_masks = train_masks[:max_train_records]
             train_set = PairedSignalDataset(
                 train_target,
                 train_source,
                 clean_target=rddm_compatible,
                 clean_condition_ppg=rddm_compatible,
                 normalization_metadata=fitted_metadata,
+                return_region_mask=return_region_mask_train,
+                cached_region_masks=train_masks,
             )
         else:
             train_set = None
@@ -539,15 +575,20 @@ def get_ppg2ecg_datasets(
             normalization_metadata,
         )
         train_target, train_source, test_target, test_source, fitted_metadata = normalized
+        train_masks = region_masks_train
         if max_train_records is not None:
             train_target = train_target[:max_train_records]
             train_source = train_source[:max_train_records]
+            if train_masks is not None:
+                train_masks = train_masks[:max_train_records]
         train_set = PairedSignalDataset(
             train_target,
             train_source,
             clean_target=False,
             clean_condition_ppg=clean_condition_ppg,
             normalization_metadata=fitted_metadata,
+            return_region_mask=return_region_mask_train,
+            cached_region_masks=train_masks,
         )
     else:
         if normalization_metadata is None:
@@ -583,6 +624,8 @@ def get_ecg2ecg_datasets(
     heldout_split: str = "val",
     max_train_records: int | None = None,
     max_heldout_records: int | None = None,
+    return_region_mask_train: bool = True,
+    region_masks_train: np.ndarray | None = None,
 ):
     """Load single- or multi-target ECG windows from PTBXL/ICBEB style arrays."""
 
@@ -592,6 +635,10 @@ def get_ecg2ecg_datasets(
         raise ValueError("max_train_records must be positive")
     if max_heldout_records is not None and max_heldout_records <= 0:
         raise ValueError("max_heldout_records must be positive")
+    if region_masks_train is not None and not load_train:
+        raise ValueError("training region masks cannot be supplied for inference-only loading")
+    if region_masks_train is not None and not return_region_mask_train:
+        raise ValueError("training region masks require return_region_mask_train=True")
     samples = SAMPLE_RATE * window_size
     target_leads = (
         (int(target_lead),)
@@ -711,12 +758,17 @@ def get_ecg2ecg_datasets(
                 record_kwargs = {
                     key: values[:max_train_records] for key, values in record_kwargs.items()
                 }
+            train_masks = region_masks_train
+            if train_masks is not None and max_train_records is not None:
+                train_masks = train_masks[:max_train_records]
             train_set = PairedSignalDataset(
                 normalized_train_target,
                 normalized_train_source,
                 clean_target=False,
                 clean_condition_ppg=False,
                 normalization_metadata=fitted_metadata,
+                return_region_mask=return_region_mask_train,
+                cached_region_masks=train_masks,
                 **record_kwargs,
             )
         else:
@@ -766,12 +818,17 @@ def get_ecg2ecg_datasets(
                 record_kwargs = {
                     key: values[:max_train_records] for key, values in record_kwargs.items()
                 }
+            train_masks = region_masks_train
+            if train_masks is not None and max_train_records is not None:
+                train_masks = train_masks[:max_train_records]
             train_set = PairedSignalDataset(
                 normalized_train_target,
                 normalized_train_source,
                 clean_target=False,
                 clean_condition_ppg=False,
                 normalization_metadata=fitted_metadata,
+                return_region_mask=return_region_mask_train,
+                cached_region_masks=train_masks,
                 **record_kwargs,
             )
         else:
@@ -788,12 +845,17 @@ def get_ecg2ecg_datasets(
         if max_train_records is not None:
             normalized_train_target = normalized_train_target[:max_train_records]
             normalized_train_source = normalized_train_source[:max_train_records]
+        train_masks = region_masks_train
+        if train_masks is not None and max_train_records is not None:
+            train_masks = train_masks[:max_train_records]
         train_set = PairedSignalDataset(
             normalized_train_target,
             normalized_train_source,
             clean_target=False,
             clean_condition_ppg=False,
             normalization_metadata=fitted_metadata,
+            return_region_mask=return_region_mask_train,
+            cached_region_masks=train_masks,
         )
     else:
         if normalization_metadata is None:

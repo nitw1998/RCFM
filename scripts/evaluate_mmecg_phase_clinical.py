@@ -46,6 +46,8 @@ from src.rcfm.metrics.clinical import ECGFiducials, delineate_ecg, measure_ecg_p
 MODELS = ("cfm", "rcfm", "rcfm_ot", "rddm")
 MODEL_LABELS = {"cfm": "CFM", "rcfm": "RCFM", "rcfm_ot": "RCFM-OT", "rddm": "RDDM"}
 MODEL_COLORS = {"cfm": "#2878b5", "rcfm": "#2f8f5b", "rcfm_ot": "#c43d4b", "rddm": "#d17a00"}
+MODEL_LABELS["cfm_ot"] = "CFM+OT"
+MODEL_COLORS["cfm_ot"] = "#76a5d5"
 
 
 def _configure_ieee_fonts() -> None:
@@ -251,6 +253,11 @@ def _plot_waveforms(
 
 
 def run(args: argparse.Namespace) -> Path:
+    global MODELS
+    MODELS = tuple(args.models)
+    unsupported = [model for model in MODELS if model not in MODEL_LABELS]
+    if not MODELS or unsupported or len(MODELS) != len(set(MODELS)):
+        raise ValueError(f"invalid mmECG clinical model selection: {unsupported}")
     if args.max_lag_samples != 16:
         raise ValueError("the frozen mmECG phase protocol requires max_lag_samples=16")
     _configure_ieee_fonts()
@@ -403,6 +410,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--sampling_rate", type=float, default=128.0)
     parser.add_argument("--max_lag_samples", type=int, default=16)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--models", nargs="+", default=list(MODELS))
     return parser
 
 
