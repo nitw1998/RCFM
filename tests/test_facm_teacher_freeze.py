@@ -31,6 +31,7 @@ def test_mimic_base_contract_rejects_ot_teacher() -> None:
             "sigma": 0.0,
             "region_weight": 0.01,
             "use_minibatch_ot": True,
+            "inference_steps": 50,
         },
         "output_spec": {"channels": 1, "length": 512},
     }
@@ -58,6 +59,7 @@ def test_multilead_facm_base_accepts_matching_canonical_teacher() -> None:
             "sigma": 0.0,
             "region_weight": 0.01,
             "use_minibatch_ot": False,
+            "inference_steps": 50,
         },
         "output_spec": {"channels": 11, "length": 512},
     }
@@ -73,3 +75,70 @@ def test_multilead_facm_base_accepts_matching_canonical_teacher() -> None:
             "target_lead_indices": target_indices,
         },
     )
+
+
+def test_facm_base_accepts_frozen_cfm_nfe50_contract() -> None:
+    checkpoint = {
+        "kind": "canonical_multistep_cfm",
+        "epoch": 200,
+        "config": {
+            "task": "ppg2ecg",
+            "datasets": ["MIMIC-AFib"],
+            "dataset_version": "random-window-version",
+            "split_hash": "random-window-split",
+            "normalization_id": "rddm_window_minmax_neg1_1_v1",
+            "alignment_id": "paired-random-window",
+            "flow_matcher": "conditional",
+            "sigma": 0.0,
+            "region_weight": 0.0,
+            "use_minibatch_ot": False,
+            "inference_steps": 50,
+        },
+        "output_spec": {"channels": 1, "length": 512},
+    }
+    validate_facm_base(
+        checkpoint,
+        {
+            "task": "ppg2ecg",
+            "datasets": "MIMIC-AFib",
+            "dataset_version": "random-window-version",
+            "split_hash": "random-window-split",
+            "normalization_id": "rddm_window_minmax_neg1_1_v1",
+            "alignment_id": "paired-random-window",
+            "base_checkpoint_kind": "canonical_multistep_cfm",
+            "base_epoch": 200,
+            "base_region_weight": 0.0,
+            "base_use_minibatch_ot": False,
+            "base_inference_steps": 50,
+        },
+    )
+
+
+def test_cfm_nfe50_contract_rejects_rcfm_checkpoint() -> None:
+    checkpoint = {
+        "kind": "canonical_multistep_rcfm",
+        "epoch": 200,
+        "config": {
+            "task": "ppg2ecg", "datasets": ["MIMIC-AFib"],
+            "dataset_version": "v", "split_hash": "s",
+            "normalization_id": "n", "alignment_id": "a",
+            "flow_matcher": "conditional", "sigma": 0.0,
+            "region_weight": 0.0, "use_minibatch_ot": False,
+            "inference_steps": 50,
+        },
+        "output_spec": {"channels": 1, "length": 512},
+    }
+    protocol = {
+        "task": "ppg2ecg", "datasets": "MIMIC-AFib",
+        "dataset_version": "v", "split_hash": "s",
+        "normalization_id": "n", "alignment_id": "a",
+        "base_checkpoint_kind": "canonical_multistep_cfm",
+        "base_epoch": 200, "base_region_weight": 0.0,
+        "base_use_minibatch_ot": False, "base_inference_steps": 50,
+    }
+    try:
+        validate_facm_base(checkpoint, protocol)
+    except ValueError as error:
+        assert "kind" in str(error)
+    else:
+        raise AssertionError("RCFM checkpoint must not pass the CFM-NFE50 contract")

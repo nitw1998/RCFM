@@ -282,6 +282,57 @@ def test_checkpoint_accepts_record_minmax_neg1_1_protocol():
         validate_checkpoint(payload)
 
 
+def test_checkpoint_accepts_joint12_record_minmax_protocol_and_disclosure():
+    payload = _payload()
+    payload["config"]["normalization_id"] = "record_joint12_minmax_neg1_1_v1"
+    payload["normalization"] = {
+        "method": "record_joint12_minmax_neg1_1",
+        "stats_scope": "per_record_shared_all_12_leads",
+        "stats_source": "dataset_sidecar_fixed_first_model_window",
+        "feature_range": [-1.0, 1.0],
+        "inverse_transform": "x=(x_scaled+1)*record_joint_range/2+record_joint_min",
+        "preserves_interlead_relative_amplitudes_and_offsets": True,
+        "heldout_target_statistics_used": True,
+        "deployment_scope": "paired_benchmark_only_not_lead_II_only_inference",
+        "generated_inverse_policy": "ground_truth_joint_12lead_scaler_is_oracle_only",
+        "normalization_id": "record_joint12_minmax_neg1_1_v1",
+        "condition_unit": "mV",
+        "target_unit": "mV",
+    }
+
+    validate_checkpoint(payload)
+
+    payload["normalization"]["heldout_target_statistics_used"] = False
+    with pytest.raises(ValueError, match="joint-12-lead min-max normalization"):
+        validate_checkpoint(payload)
+
+
+def test_checkpoint_accepts_full_source_record_joint12_minmax_protocol():
+    payload = _payload()
+    payload["config"]["normalization_id"] = "source_record_joint12_minmax_neg1_1_v1"
+    payload["normalization"] = {
+        "method": "source_record_joint12_minmax_neg1_1",
+        "stats_scope": "per_source_record_shared_full_10s_all_12_leads",
+        "stats_source": "dataset_sidecar_full_source_record",
+        "feature_range": [-1.0, 1.0],
+        "inverse_transform": "x=(x_scaled+1)*source_record_joint_range/2+source_record_joint_min",
+        "preserves_interlead_relative_amplitudes_and_offsets": True,
+        "preserves_within_record_interwindow_scale": True,
+        "heldout_target_statistics_used": True,
+        "deployment_scope": "paired_benchmark_only_not_lead_II_only_inference",
+        "generated_inverse_policy": "ground_truth_full_record_joint_12lead_scaler_is_oracle_only",
+        "normalization_id": "source_record_joint12_minmax_neg1_1_v1",
+        "condition_unit": "mV",
+        "target_unit": "mV",
+    }
+
+    validate_checkpoint(payload)
+
+    payload["normalization"]["preserves_within_record_interwindow_scale"] = False
+    with pytest.raises(ValueError, match="source-record joint-12-lead min-max normalization"):
+        validate_checkpoint(payload)
+
+
 def test_checkpoint_accepts_rddm_window_minmax_protocol():
     payload = _payload()
     payload["config"]["normalization_id"] = "rddm_window_minmax_neg1_1_v1"
@@ -325,6 +376,29 @@ def test_checkpoint_accepts_generic_window_minmax_protocol():
 
     payload["normalization"]["preprocessing_order"] = "clean_then_minmax"
     with pytest.raises(ValueError, match="checkpoint window min-max normalization"):
+        validate_checkpoint(payload)
+
+
+def test_checkpoint_accepts_source_record_per_modality_minmax_protocol():
+    payload = _payload()
+    payload["config"]["normalization_id"] = "source_record_minmax_neg1_1_v1"
+    payload["normalization"] = {
+        "method": "source_record_minmax_neg1_1",
+        "stats_scope": "per_source_continuous_record_per_modality",
+        "stats_source": "dataset_sidecars_computed_before_window_split",
+        "feature_range": [-1.0, 1.0],
+        "inverse_transform": "x=(x_scaled+1)*source_record_range/2+source_record_min",
+        "generated_inverse_policy": "ground_truth_target_scaler_is_oracle_only",
+        "cross_modality_scaler_shared": False,
+        "normalization_id": "source_record_minmax_neg1_1_v1",
+        "condition_unit": payload["config"]["condition_unit"],
+        "target_unit": payload["config"]["target_unit"],
+    }
+
+    validate_checkpoint(payload)
+
+    payload["normalization"]["cross_modality_scaler_shared"] = True
+    with pytest.raises(ValueError, match="source-record min-max normalization"):
         validate_checkpoint(payload)
 
 

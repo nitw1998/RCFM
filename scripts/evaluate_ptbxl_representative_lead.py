@@ -48,17 +48,35 @@ def run(args: argparse.Namespace) -> Path:
     if unsupported:
         raise ValueError(f"unsupported models: {unsupported}")
 
-    source_protocol_path = input_dir / "protocol.json"
+    source_protocol_path = input_dir / ("summary.json" if args.legacy_single_target else "protocol.json")
     source_protocol = json.loads(source_protocol_path.read_text(encoding="utf-8"))
-    if not _valid_source_protocol(source_protocol, None):
+    if args.legacy_single_target:
+        if not (
+            source_protocol.get("protocol") == "legacy_ptbxl_single_lead_cfm_v1"
+            and source_protocol.get("split_source") == "official_fold10"
+            and source_protocol.get("target_lead") == args.lead
+            and str(args.epoch) in source_protocol.get("epochs", {})
+        ):
+            raise ValueError("legacy representative-lead analysis requires completed fold-10 predictions")
+    elif not _valid_source_protocol(source_protocol, None):
         raise ValueError("representative-lead analysis requires completed raw predictions")
     with np.load(input_dir / "paired_reference.npz", allow_pickle=False) as artifact:
         targets = np.asarray(artifact["targets"], dtype=np.float32)
-        patient_ids = np.asarray(artifact["patient_ids"])
-        record_ids = np.asarray(artifact["record_ids"])
+        patient_ids = np.asarray(
+            artifact["patient_ids"]
+            if "patient_ids" in artifact.files
+            else artifact["subject_ids"]
+        )
+        record_ids = (
+            np.asarray(artifact["record_ids"])
+            if "record_ids" in artifact.files
+            else np.asarray(np.load(data_dir / "record_ids_test.npy", allow_pickle=False))
+        )
 
-    lead_position = TARGET_LEADS.index(args.lead)
+    lead_position = 0 if args.legacy_single_target else TARGET_LEADS.index(args.lead)
     source_lead_index = TARGET_INDICES[lead_position]
+    if args.legacy_single_target:
+        source_lead_index = TARGET_INDICES[TARGET_LEADS.index(args.lead)]
     minima = np.load(data_dir / "record_minima_test.npy", allow_pickle=False)[:, source_lead_index]
     ranges = np.load(data_dir / "record_ranges_test.npy", allow_pickle=False)[:, source_lead_index]
     physical_target = _inverse_oracle_minmax(
@@ -66,11 +84,16 @@ def run(args: argparse.Namespace) -> Path:
     )[:, 0]
     source = np.load(data_dir / "X_test_resampled.npy", mmap_mode="r")[: len(targets), :512, source_lead_index]
     if not np.allclose(physical_target, source, atol=2e-6, rtol=2e-6):
-        raise ValueError("V3 inverse transform does not reproduce stored PTB-XL mV waveforms")
+        raise ValueError(f"{args.lead} inverse transform does not reproduce stored PTB-XL mV waveforms")
     physical_predictions = {}
     for model in args.models:
+        prediction_name = (
+            f"predictions_epoch_{args.epoch}.npy"
+            if args.legacy_single_target
+            else f"{model}_predictions.npy"
+        )
         prediction = np.asarray(
-            np.load(input_dir / f"{model}_predictions.npy", mmap_mode="r")[:, lead_position : lead_position + 1]
+            np.load(input_dir / prediction_name, mmap_mode="r")[:, lead_position : lead_position + 1]
         )
         physical_predictions[model] = _inverse_oracle_minmax(
             prediction, minima[:, None], ranges[:, None]
@@ -144,10 +167,18 @@ def run(args: argparse.Namespace) -> Path:
         "hrv": "blocked_four_second_records",
         "source_protocol_sha256": _sha256(source_protocol_path),
         "source_predictions": {
-            model: _sha256(input_dir / f"{model}_predictions.npy") for model in args.models
+            model: _sha256(
+                input_dir
+                / (
+                    f"predictions_epoch_{args.epoch}.npy"
+                    if args.legacy_single_target
+                    else f"{model}_predictions.npy"
+                )
+            )
+            for model in args.models
         },
         "claim_boundary": (
-            "V3 patient-level descriptive analysis; amplitudes use oracle target scalers; "
+            f"{args.lead} patient-level descriptive analysis; amplitudes use oracle target scalers; "
             "HRV blocked; automatic DWT and one training seed do not support population inference."
         ),
         "figure_style": {
@@ -180,6 +211,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--sampling_rate", type=float, default=128.0)
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--models", nargs="+", default=["cfm", "rcfm", "rcfm_ot", "rddm"])
+    parser.add_argument("--legacy_single_target", action="store_true")
+    parser.add_argument("--epoch", type=int, default=999)
     return parser
 
 

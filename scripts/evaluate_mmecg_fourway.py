@@ -44,7 +44,9 @@ EXPECTED_SPLIT_HASH = "e26fc81121cfd3b0e457608e37a7aa496ac7c48a0e0e7583a465bd069
 EXPECTED_ALIGNMENT = "same_record_same_window_no_additional_phase_correction_subject_split_v1"
 
 
-def _validate_flow_contracts(contracts: Mapping[str, Mapping[str, object]]) -> None:
+def _validate_flow_contracts(
+    contracts: Mapping[str, Mapping[str, object]], expected_training_seed: int = 31
+) -> None:
     if set(contracts) != {"cfm", "rcfm", "rcfm_ot"}:
         raise ValueError("flow contracts must contain cfm, rcfm, and rcfm_ot")
     kinds = {
@@ -74,7 +76,7 @@ def _validate_flow_contracts(contracts: Mapping[str, Mapping[str, object]]) -> N
         "task": "rcg2ecg", "datasets": ["mmECG"],
         "dataset_version": EXPECTED_DATASET_VERSION, "split_hash": EXPECTED_SPLIT_HASH,
         "normalization_id": "window_minmax_neg1_1_v1", "alignment_id": EXPECTED_ALIGNMENT,
-        "window_size": 4, "seed": 31,
+        "window_size": 4, "seed": expected_training_seed,
     }
     bad = [key for key, value in expected.items() if reference["config"].get(key) != value]
     output = reference["output_spec"]
@@ -91,7 +93,9 @@ def _validate_flow_contracts(contracts: Mapping[str, Mapping[str, object]]) -> N
         raise ValueError("RCFM-OT must use exact minibatch OT")
 
 
-def _validate_rddm_checkpoint(checkpoint: Mapping[str, object]) -> None:
+def _validate_rddm_checkpoint(
+    checkpoint: Mapping[str, object], expected_training_seed: int = 31
+) -> None:
     required = {
         "schema_version", "kind", "epoch", "global_step", "config", "normalization", "provenance"
     }
@@ -104,7 +108,7 @@ def _validate_rddm_checkpoint(checkpoint: Mapping[str, object]) -> None:
         "normalization_id": "window_minmax_neg1_1_v1", "alignment_id": EXPECTED_ALIGNMENT,
         "heldout_split": "test", "expected_train_windows": 9590,
         "expected_test_windows": 2877, "window_size": 4, "target_channels": 1,
-        "nT": 10, "seed": 31, "reproduction_label": "RDDM-RCG (adapted)",
+        "nT": 10, "seed": expected_training_seed, "reproduction_label": "RDDM-RCG (adapted)",
     }
     bad = [key for key, value in expected.items() if config.get(key) != value]
     if (

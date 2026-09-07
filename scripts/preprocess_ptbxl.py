@@ -1,8 +1,7 @@
 """Build official-fold PTB-XL arrays compatible with the RCFM ECG loader.
 
-The stored ``X_*_resampled.npy`` arrays remain in physical mV.  The RCFM
-loader applies reversible per-record, per-lead min-max scaling to the fixed
-model window using the sidecars emitted here.
+The stored ``X_*_resampled.npy`` arrays remain in physical mV. The selected
+normalization protocol only controls the reversible coefficient sidecars.
 """
 
 from __future__ import annotations
@@ -181,6 +180,50 @@ def minmax_neg1_1(values: np.ndarray, minima: np.ndarray, ranges: np.ndarray) ->
     return (2.0 * (waveforms - offsets[:, None, :]) / scales[:, None, :] - 1.0).astype(np.float32)
 
 
+def record_joint12_minmax_statistics(
+    values: np.ndarray,
+    model_window_samples: int,
+    minimum_record_range: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return one min/range per record over time and all 12 leads."""
+
+    waveforms = np.asarray(values, dtype=np.float32)
+    if waveforms.ndim != 3 or waveforms.shape[2] != len(LEAD_ORDER):
+        raise ValueError("values must have shape (records, samples, 12)")
+    if model_window_samples <= 0 or model_window_samples > waveforms.shape[1]:
+        raise ValueError("model window is outside the stored waveform duration")
+    model_view = waveforms[:, :model_window_samples]
+    if not np.all(np.isfinite(model_view)):
+        raise ValueError("model waveform window contains NaN or Inf")
+    minima = model_view.min(axis=(1, 2))
+    ranges = model_view.max(axis=(1, 2)) - minima
+    if np.any(ranges < minimum_record_range) or not np.all(np.isfinite(ranges)):
+        bad = np.flatnonzero(ranges < minimum_record_range)
+        raise ValueError(f"constant or near-constant PTB-XL records: {bad[:10].tolist()}")
+    return minima.astype(np.float32), ranges.astype(np.float32)
+
+
+def joint12_minmax_neg1_1(
+    values: np.ndarray, minima: np.ndarray, ranges: np.ndarray
+) -> np.ndarray:
+    """Apply one record-wise affine transform shared by all leads."""
+
+    waveforms = np.asarray(values, dtype=np.float32)
+    offsets = np.asarray(minima, dtype=np.float32)
+    scales = np.asarray(ranges, dtype=np.float32)
+    if waveforms.ndim != 3 or waveforms.shape[2] != len(LEAD_ORDER):
+        raise ValueError("values must have shape (records, samples, 12)")
+    if offsets.shape != (len(waveforms),) or scales.shape != offsets.shape:
+        raise ValueError("joint 12-lead coefficients must have one value per record")
+    if not np.all(np.isfinite(waveforms)) or not np.all(np.isfinite(offsets)):
+        raise ValueError("joint 12-lead min-max inputs must be finite")
+    if not np.all(np.isfinite(scales)) or np.any(scales <= 0):
+        raise ValueError("joint 12-lead ranges must be finite and positive")
+    return (
+        2.0 * (waveforms - offsets[:, None, None]) / scales[:, None, None] - 1.0
+    ).astype(np.float32)
+
+
 def _load_and_resample_record(
     source_root: Path,
     relative_record: str,
@@ -231,6 +274,7 @@ def run(args: argparse.Namespace) -> Path:
     split_summaries: dict[str, object] = {}
     effective_splits: dict[str, list[int]] = {}
     excluded_records: list[dict[str, object]] = []
+    joint12 = getattr(args, "normalization_scope", "per_record_per_lead") == "per_record_joint_12lead"
 
     try:
         for split, indices in splits.items():
@@ -243,7 +287,8 @@ def run(args: argparse.Namespace) -> Path:
                 dtype=np.float32,
                 shape=(len(indices), output_samples, len(LEAD_ORDER)),
             )
-            minima = np.empty((len(indices), len(LEAD_ORDER)), dtype=np.float32)
+            coefficient_shape = (len(indices),) if joint12 else (len(indices), len(LEAD_ORDER))
+            minima = np.empty(coefficient_shape, dtype=np.float32)
             ranges = np.empty_like(minima)
             effective_indices: list[int] = []
             output_index = 0
@@ -256,20 +301,38 @@ def run(args: argparse.Namespace) -> Path:
                     args.output_rate,
                     args.duration_seconds,
                 )
-                record_minima = waveform[:model_window_samples].min(axis=0)
-                record_ranges = waveform[:model_window_samples].max(axis=0) - record_minima
-                invalid_leads = np.flatnonzero(record_ranges < args.minimum_lead_range)
-                if len(invalid_leads):
+                model_view = waveform[:model_window_samples]
+                if joint12:
+                    record_minima = np.float32(model_view.min())
+                    record_ranges = np.float32(model_view.max() - record_minima)
+                    invalid = bool(record_ranges < args.minimum_lead_range)
+                    invalid_leads = np.empty(0, dtype=np.int64)
+                else:
+                    record_minima = model_view.min(axis=0)
+                    record_ranges = model_view.max(axis=0) - record_minima
+                    invalid_leads = np.flatnonzero(record_ranges < args.minimum_lead_range)
+                    invalid = bool(len(invalid_leads))
+                if invalid:
+                    detail = (
+                        {
+                            "reason": "joint_12lead_range_below_threshold_in_fixed_model_window",
+                            "record_range_mV": float(record_ranges),
+                        }
+                        if joint12
+                        else {
+                            "reason": "required_lead_range_below_threshold_in_fixed_model_window",
+                            "lead_indices": invalid_leads.astype(int).tolist(),
+                            "lead_names": [LEAD_ORDER[index] for index in invalid_leads],
+                            "lead_ranges_mV": [float(record_ranges[index]) for index in invalid_leads],
+                        }
+                    )
                     excluded_records.append(
                         {
                             "ecg_id": int(row.ecg_id),
                             "patient_id": int(row.patient_id),
                             "split": split,
                             "strat_fold": int(row.strat_fold),
-                            "reason": "required_lead_range_below_threshold_in_fixed_model_window",
-                            "lead_indices": invalid_leads.astype(int).tolist(),
-                            "lead_names": [LEAD_ORDER[index] for index in invalid_leads],
-                            "lead_ranges_mV": [float(record_ranges[index]) for index in invalid_leads],
+                            **detail,
                         }
                     )
                 else:
@@ -306,12 +369,13 @@ def run(args: argparse.Namespace) -> Path:
 
             effective_splits[split] = effective_indices
             rows = metadata.iloc[effective_indices]
+            coefficient_prefix = "record_joint" if joint12 else "record"
             sidecars = {
                 f"record_ids_{split}.npy": rows.ecg_id.to_numpy(dtype=np.int32),
                 f"patient_ids_{split}.npy": rows.patient_id.to_numpy(dtype=np.int32),
                 f"strat_folds_{split}.npy": rows.strat_fold.to_numpy(dtype=np.uint8),
-                f"record_minima_{split}.npy": minima,
-                f"record_ranges_{split}.npy": ranges,
+                f"{coefficient_prefix}_minima_{split}.npy": minima,
+                f"{coefficient_prefix}_ranges_{split}.npy": ranges,
             }
             for filename, array in sidecars.items():
                 _atomic_save_npy(output_dir / filename, array)
@@ -347,10 +411,45 @@ def run(args: argparse.Namespace) -> Path:
             "must_not_change_ptbxl_waveform_split": True,
         },
     }
+    dataset_version = (
+        "ptbxl-1.0.1-official-folds-record-joint12-minmax-neg1-1-v1"
+        if joint12
+        else "ptbxl-1.0.1-official-folds-record-minmax-neg1-1-v1"
+    )
+    normalization = (
+        {
+            "model_input": "per_record_joint_12lead_minmax_neg1_1",
+            "normalization_id": "record_joint12_minmax_neg1_1_v1",
+            "formula": "x_scaled=2*(x-record_joint_min)/record_joint_range-1",
+            "inverse_formula": "x=(x_scaled+1)*record_joint_range/2+record_joint_min",
+            "coefficient_scope": "fixed_first_model_window_all_time_and_all_12_leads",
+            "coefficient_files": "record_joint_minima_{split}.npy and record_joint_ranges_{split}.npy",
+            "coefficient_shape": ["records"],
+            "preserves_interlead_relative_amplitudes_and_offsets": True,
+            "heldout_target_statistics_used": True,
+            "deployment_boundary": (
+                "paired-benchmark normalization only: held-out coefficients use Lead II and the "
+                "11 target leads and are unavailable from Lead II alone"
+            ),
+            "stored_X_arrays_remain_mV_for_legacy_RCFM_loader_compatibility": True,
+        }
+        if joint12
+        else {
+            "model_input": "per_record_per_lead_minmax_neg1_1",
+            "normalization_id": "record_minmax_neg1_1_v1",
+            "formula": "x_scaled=2*(x-record_min)/record_range-1",
+            "inverse_formula": "x=(x_scaled+1)*record_range/2+record_min",
+            "coefficient_scope": "fixed_first_model_window",
+            "coefficient_files": "record_minima_{split}.npy and record_ranges_{split}.npy",
+            "coefficient_shape": ["records", 12],
+            "preserves_interlead_relative_amplitudes_and_offsets": False,
+            "stored_X_arrays_remain_mV_for_legacy_RCFM_loader_compatibility": True,
+        }
+    )
     manifest = {
         "schema_version": 1,
         "dataset": "PTB-XL",
-        "dataset_version": "ptbxl-1.0.1-official-folds-record-minmax-neg1-1-v1",
+        "dataset_version": dataset_version,
         "source_records": len(metadata),
         "eligible_records": len(metadata) - len(excluded_records),
         "excluded_records": excluded_records,
@@ -381,18 +480,14 @@ def run(args: argparse.Namespace) -> Path:
             "target_leads": [lead for index, lead in enumerate(LEAD_ORDER) if index != 1],
             "target_lead_indices": [index for index in range(len(LEAD_ORDER)) if index != 1],
         },
-        "normalization": {
-            "model_input": "per_record_per_lead_minmax_neg1_1",
-            "formula": "x_scaled=2*(x-record_min)/record_range-1",
-            "inverse_formula": "x=(x_scaled+1)*record_range/2+record_min",
-            "coefficient_scope": "fixed_first_model_window",
-            "coefficient_files": "record_minima_{split}.npy and record_ranges_{split}.npy",
-            "coefficient_shape": ["records", 12],
-            "stored_X_arrays_remain_mV_for_legacy_RCFM_loader_compatibility": True,
-        },
+        "normalization": normalization,
         "signal_qc": {
             "timing": "after_official_fold_assignment_before_output_publication",
-            "scope": "fixed_first_model_window_all_12_leads",
+            "scope": (
+                "fixed_first_model_window_joint_12lead_range"
+                if joint12
+                else "fixed_first_model_window_all_12_leads"
+            ),
             "minimum_lead_range_mV": args.minimum_lead_range,
             "excluded_record_count": len(excluded_records),
             "policy": "exclude_entire_paired_record_without_reassigning_folds",
@@ -417,6 +512,11 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--duration_seconds", type=int, default=10)
     parser.add_argument("--model_window_seconds", type=int, default=4)
     parser.add_argument("--minimum_lead_range", type=float, default=1e-6)
+    parser.add_argument(
+        "--normalization_scope",
+        choices=["per_record_per_lead", "per_record_joint_12lead"],
+        default="per_record_per_lead",
+    )
     return parser
 
 

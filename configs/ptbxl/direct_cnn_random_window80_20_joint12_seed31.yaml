@@ -1,0 +1,20 @@
+{
+  "task": "ecg2ecg", "datasets": "PTBXL",
+  "dataset_version": "ptbxl-1.0.1-random-window80-20-record-overlap-source-record-joint12-full10s-minmax-neg1-1-v2",
+  "split_hash": "9ba296dc33ef6f29f9368ae4d1dd61feceb9366100b7b4afbc8698ea7592012c",
+  "normalization_id": "source_record_joint12_minmax_neg1_1_v1",
+  "condition_unit": "mV", "target_unit": "mV",
+  "alignment_id": "ptbxl_all_records_two_nonoverlap_4s_windows_random80_20_seed31_lead_II_to_other11_v1",
+  "condition_lead": "II", "target_lead": "I,III,aVR,aVL,aVF,V1,V2,V3,V4,V5,V6",
+  "condition_lead_index": 1, "target_lead_indices": [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  "heldout_split": "val", "heldout_role": "validation",
+  "expected_train_windows": 34939, "expected_heldout_windows": 8735,
+  "window_size": 4, "width": 32, "dilations": "1,2,4,8,16,32,64",
+  "epochs": 500, "batch_size": 128, "num_workers": 2,
+  "learning_rate": 0.0001, "weight_decay": 0.0001, "warmup_epochs": 2,
+  "save_every": 25, "validation_interval_epochs": 25, "grad_clip": 1.0,
+  "seed": 31, "device": "cuda:0", "log_interval_steps": 10,
+  "wandb_mode": "online", "wandb_project": "RCFM",
+  "wandb_group": "ptbxl-direct-cnn-random-window80-20-joint12", "wandb_job_type": "train",
+  "wandb_run_name": "ptbxl-direct-cnn-random-window80-20-joint12-s31-e500"
+}

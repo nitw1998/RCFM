@@ -18,6 +18,7 @@
   "heldout_role": "validation_endpoint_only",
   "reproduction_label": "CAT-ECG (adapted)",
   "cycle_source": "source_ecg_lead_II_fft_only",
+  "ecg_adapter_version": "shared_first_lead_specific_second_cat_v2",
   "nfe": 1,
   "cat_layers": 2,
   "top_k": 2,

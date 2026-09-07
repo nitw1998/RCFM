@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 || ! "$1" =~ ^[0-9]+$ || ! "$2" =~ ^(cfm|cfm_ot|rcfm|rcfm_ot)$ || ! "$3" =~ ^(31|32|33|all)$ ]]; then
-  echo "Usage: $0 GPU_INDEX {cfm|cfm_ot|rcfm|rcfm_ot} {31|32|33|all}" >&2
+if [[ $# -ne 3 || ! "$1" =~ ^[0-9]+$ || ! "$2" =~ ^(cfm|cfm_ot|rcfm|rcfm_ot|rddm)$ || ! "$3" =~ ^(31|32|33|all)$ ]]; then
+  echo "Usage: $0 GPU_INDEX {cfm|cfm_ot|rcfm|rcfm_ot|rddm} {31|32|33|all}" >&2
   exit 2
 fi
 
@@ -31,6 +31,7 @@ case "$VARIANT" in
   cfm_ot) CONFIG="configs/cpsc2018/cfm_ot_record_minmax_neg1_1_seed31.yaml"; RUN_PREFIX="cpsc2018_cfm_exact_ot" ;;
   rcfm) CONFIG="configs/cpsc2018/rcfm_record_minmax_neg1_1_no_ot_seed31.yaml"; RUN_PREFIX="cpsc2018_rcfm_pan_no_ot" ;;
   rcfm_ot) CONFIG="configs/cpsc2018/rcfm_record_minmax_neg1_1_exact_ot_seed31.yaml"; RUN_PREFIX="cpsc2018_rcfm_pan_exact_ot" ;;
+  rddm) CONFIG="configs/cpsc2018/rddm_adapted_record_minmax_neg1_1_seed31.yaml"; RUN_PREFIX="cpsc2018_rddm_ecg_adapted_minmax" ;;
 esac
 
 REQUIRED_FILES=(

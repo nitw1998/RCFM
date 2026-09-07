@@ -152,6 +152,41 @@ def validate_checkpoint(payload: Mapping[str, Any]) -> None:
                 "checkpoint record min-max normalization has invalid fields: "
                 + ", ".join(mismatched)
             )
+    elif normalization["method"] == "record_joint12_minmax_neg1_1":
+        expected = {
+            "stats_scope": "per_record_shared_all_12_leads",
+            "stats_source": "dataset_sidecar_fixed_first_model_window",
+            "feature_range": [-1.0, 1.0],
+            "inverse_transform": "x=(x_scaled+1)*record_joint_range/2+record_joint_min",
+            "preserves_interlead_relative_amplitudes_and_offsets": True,
+            "heldout_target_statistics_used": True,
+            "deployment_scope": "paired_benchmark_only_not_lead_II_only_inference",
+            "generated_inverse_policy": "ground_truth_joint_12lead_scaler_is_oracle_only",
+        }
+        mismatched = [key for key, value in expected.items() if normalization.get(key) != value]
+        if mismatched:
+            raise ValueError(
+                "checkpoint joint-12-lead min-max normalization has invalid fields: "
+                + ", ".join(mismatched)
+            )
+    elif normalization["method"] == "source_record_joint12_minmax_neg1_1":
+        expected = {
+            "stats_scope": "per_source_record_shared_full_10s_all_12_leads",
+            "stats_source": "dataset_sidecar_full_source_record",
+            "feature_range": [-1.0, 1.0],
+            "inverse_transform": "x=(x_scaled+1)*source_record_joint_range/2+source_record_joint_min",
+            "preserves_interlead_relative_amplitudes_and_offsets": True,
+            "preserves_within_record_interwindow_scale": True,
+            "heldout_target_statistics_used": True,
+            "deployment_scope": "paired_benchmark_only_not_lead_II_only_inference",
+            "generated_inverse_policy": "ground_truth_full_record_joint_12lead_scaler_is_oracle_only",
+        }
+        mismatched = [key for key, value in expected.items() if normalization.get(key) != value]
+        if mismatched:
+            raise ValueError(
+                "checkpoint source-record joint-12-lead min-max normalization has invalid fields: "
+                + ", ".join(mismatched)
+            )
     elif normalization["method"] == "rddm_window_minmax_neg1_1":
         expected = {
             "stats_scope": "per_window_per_modality",
@@ -182,14 +217,32 @@ def validate_checkpoint(payload: Mapping[str, Any]) -> None:
                 "checkpoint window min-max normalization has invalid fields: "
                 + ", ".join(mismatched)
             )
+    elif normalization["method"] == "source_record_minmax_neg1_1":
+        expected = {
+            "stats_scope": "per_source_continuous_record_per_modality",
+            "stats_source": "dataset_sidecars_computed_before_window_split",
+            "feature_range": [-1.0, 1.0],
+            "inverse_transform": "x=(x_scaled+1)*source_record_range/2+source_record_min",
+            "generated_inverse_policy": "ground_truth_target_scaler_is_oracle_only",
+            "cross_modality_scaler_shared": False,
+        }
+        mismatched = [key for key, value in expected.items() if normalization.get(key) != value]
+        if mismatched:
+            raise ValueError(
+                "checkpoint source-record min-max normalization has invalid fields: "
+                + ", ".join(mismatched)
+            )
     else:
         raise ValueError("checkpoint normalization method is unsupported")
     expected_normalization_id = {
         "training_global_zscore": "training_global_zscore_v1",
         "record_zscore": "record_zscore_v1",
         "record_minmax_neg1_1": "record_minmax_neg1_1_v1",
+        "record_joint12_minmax_neg1_1": "record_joint12_minmax_neg1_1_v1",
+        "source_record_joint12_minmax_neg1_1": "source_record_joint12_minmax_neg1_1_v1",
         "rddm_window_minmax_neg1_1": "rddm_window_minmax_neg1_1_v1",
         "window_minmax_neg1_1": "window_minmax_neg1_1_v1",
+        "source_record_minmax_neg1_1": "source_record_minmax_neg1_1_v1",
     }[normalization["method"]]
     if normalization["normalization_id"] != expected_normalization_id:
         raise ValueError("checkpoint normalization method and normalization_id disagree")

@@ -47,7 +47,9 @@ EXPECTED_ALIGNMENT = "same_record_simultaneous_channels_first_4s_lead_II_to_othe
 EXPECTED_UPSTREAM_COMMIT = "7d5348843c3985c211a23ae5105a2d9497d5156a"
 
 
-def _validate_flow_contracts(contracts: Mapping[str, Mapping[str, object]]) -> None:
+def _validate_flow_contracts(
+    contracts: Mapping[str, Mapping[str, object]], expected_training_seed: int = 31
+) -> None:
     expected_kinds = {
         "cfm": "canonical_multistep_cfm",
         "rcfm": "canonical_multistep_rcfm",
@@ -81,6 +83,8 @@ def _validate_flow_contracts(contracts: Mapping[str, Mapping[str, object]]) -> N
         "condition_lead_index": 1, "target_lead_indices": list(TARGET_INDICES), "window_size": 4,
     }
     bad = [key for key, value in expected.items() if config.get(key) != value]
+    if int(config.get("seed", -1)) != expected_training_seed:
+        bad.append("seed")
     if bad or int(output.get("channels", 0)) != 11 or int(output.get("length", 0)) != 512:
         raise ValueError("flow checkpoint violates the frozen CPSC2018 contract: " + ", ".join(bad))
     if tuple(output.get("target_leads", ())) != TARGET_LEADS:
@@ -96,7 +100,9 @@ def _validate_flow_contracts(contracts: Mapping[str, Mapping[str, object]]) -> N
         raise ValueError("RCFM-OT must use exact minibatch OT")
 
 
-def _validate_rddm_checkpoint(checkpoint: Mapping[str, object]) -> None:
+def _validate_rddm_checkpoint(
+    checkpoint: Mapping[str, object], expected_training_seed: int = 31
+) -> None:
     if checkpoint.get("kind") != "independent_rddm_reproduction" or int(checkpoint.get("epoch", -1)) != 500:
         raise ValueError("RDDM evaluation requires the reproduced epoch-500 checkpoint")
     config = checkpoint["config"]
@@ -106,7 +112,7 @@ def _validate_rddm_checkpoint(checkpoint: Mapping[str, object]) -> None:
         "normalization_id": "record_minmax_neg1_1_v1", "alignment_id": EXPECTED_ALIGNMENT,
         "condition_lead_index": 1, "target_lead_indices": list(TARGET_INDICES),
         "target_channels": 11, "window_size": 4, "nT": 10, "attention_heads": 8,
-        "seed": 31, "reproduction_label": "RDDM-ECG (adapted)",
+        "seed": expected_training_seed, "reproduction_label": "RDDM-ECG (adapted)",
     }
     bad = [key for key, value in expected.items() if config.get(key) != value]
     if bad or int(checkpoint.get("global_step", -1)) != 21500:
@@ -130,9 +136,10 @@ def _validate_manifest(path: Path, expected_records: int) -> dict[str, object]:
 
 @torch.no_grad()
 def _generate_rddm(checkpoint_path: Path, conditions: np.ndarray, batch_size: int,
-                   sampling_seed: int, device: torch.device) -> tuple[np.ndarray, dict[str, object]]:
+                   sampling_seed: int, device: torch.device,
+                   expected_training_seed: int = 31) -> tuple[np.ndarray, dict[str, object]]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    _validate_rddm_checkpoint(checkpoint)
+    _validate_rddm_checkpoint(checkpoint, expected_training_seed)
     config = checkpoint["config"]
     channels, length = int(config["target_channels"]), int(config["window_size"]) * 128
     model = RDDM(
@@ -178,9 +185,9 @@ def run(args: argparse.Namespace) -> Path:
     started = datetime.now(timezone.utc).isoformat()
     flow_paths = {"cfm": args.cfm_checkpoint, "rcfm": args.rcfm_checkpoint, "rcfm_ot": args.rcfm_ot_checkpoint}
     contracts = {name: _checkpoint_contract(path) for name, path in flow_paths.items()}
-    _validate_flow_contracts(contracts)
+    _validate_flow_contracts(contracts, args.expected_training_seed)
     rddm = torch.load(args.rddm_checkpoint, map_location="cpu")
-    _validate_rddm_checkpoint(rddm)
+    _validate_rddm_checkpoint(rddm, args.expected_training_seed)
     rddm_steps = int(rddm["config"]["nT"])
     del rddm
     gc.collect()
@@ -218,7 +225,8 @@ def run(args: argparse.Namespace) -> Path:
         np.save(output / f"{name}_predictions.npy", predictions[name], allow_pickle=False)
         generation[name] = {**metadata, "prediction_sha256": _array_sha256(predictions[name])}
     predictions["rddm"], metadata = _generate_rddm(
-        args.rddm_checkpoint, conditions, args.batch_size, args.rddm_sampling_seed, device
+        args.rddm_checkpoint, conditions, args.batch_size, args.rddm_sampling_seed, device,
+        args.expected_training_seed,
     )
     np.save(output / "rddm_predictions.npy", predictions["rddm"], allow_pickle=False)
     generation["rddm"] = {**metadata, "prediction_sha256": _array_sha256(predictions["rddm"])}
@@ -243,6 +251,7 @@ def run(args: argparse.Namespace) -> Path:
             "primary_alignment": "raw_synchronized_same_record_same_start_no_shift",
             "phase_correction_applied": False, "phase_diagnostic_applied": False,
             "flow_nfe": args.steps, "flow_noise_seed": args.noise_seed,
+            "training_seed": args.expected_training_seed,
             "rddm_steps": rddm_steps, "rddm_sampling_seed": args.rddm_sampling_seed,
             "same_flow_noise_across_flow_models": True,
         },
@@ -286,6 +295,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--noise_seed", type=int, default=2025)
     parser.add_argument("--rddm_sampling_seed", type=int, default=2025)
     parser.add_argument("--deterministic_seed", type=int, default=31)
+    parser.add_argument("--expected_training_seed", type=int, default=31)
     parser.add_argument("--expected_records", type=int, default=686)
     parser.add_argument("--max_records", type=int, default=None)
     return parser

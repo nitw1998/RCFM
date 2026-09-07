@@ -5,6 +5,7 @@ import pytest
 from train_cfm_compare import parse_args_with_config as parse_cfm
 from train_cfm_ot import parse_args_with_config as parse_cfm_ot
 from train_rcfm import parse_args_with_config as parse_rcfm
+from train_rddm_compare import parse_args_with_config as parse_rddm
 
 
 CONFIG_ROOT = Path(__file__).resolve().parents[1] / "configs" / "cpsc2018"
@@ -73,6 +74,26 @@ def test_cpsc_core_factorial_additional_seed_contract(seed: int) -> None:
     assert rcfm_ot.ot_sampling_strategy == "assignment"
 
 
+@pytest.mark.parametrize("seed", (32, 33))
+def test_cpsc_rddm_additional_seed_contract(seed: int) -> None:
+    args = parse_rddm(
+        [
+            "--config",
+            str(CONFIG_ROOT / "rddm_adapted_record_minmax_neg1_1_seed31.yaml"),
+            "--seed",
+            str(seed),
+            "--wandb_mode",
+            "online",
+        ]
+    )
+    assert args.datasets == "CPSC2018"
+    assert args.dataset_version == EXPECTED_VERSION
+    assert args.split_hash == EXPECTED_SPLIT
+    assert args.seed == seed
+    assert args.nT == 10
+    assert args.reproduction_label == "RDDM-ECG (adapted)"
+
+
 def test_public_cpsc_launchers_are_path_configurable() -> None:
     repository = Path(__file__).resolve().parents[1]
     launcher = (repository / "scripts/launch_cpsc2018_factorial_multiseed.sh").read_text()
@@ -85,3 +106,5 @@ def test_public_cpsc_launchers_are_path_configurable() -> None:
     assert "SEEDS=(31 32 33)" in launcher
     assert "--validation_interval_epochs 1" in worker
     assert "region_mask_path" not in worker
+    assert "rddm_adapted_record_minmax_neg1_1_seed31.yaml" in launcher
+    assert 'ENTRY="train_rddm_compare.py"' in worker

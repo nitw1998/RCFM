@@ -239,7 +239,10 @@ class RDDM(nn.Module):
         
         return masked_noise, random_noise
 
-    def forward(self, x=None, cond1=None, cond2=None, mode="train", patch_labels=None, window_size=128*4):
+    def forward(
+        self, x=None, cond1=None, cond2=None, mode="train", patch_labels=None,
+        window_size=128*4, output_channels=1,
+    ):
 
         if mode == "train":
             
@@ -274,12 +277,14 @@ class RDDM(nn.Module):
             n_sample = cond1["down_conditions"][-1].shape[0]
             device = cond1["down_conditions"][-1].device
             
-            x_i = torch.randn(n_sample, 1, window_size).to(device)
+            if not isinstance(output_channels, int) or output_channels <= 0:
+                raise ValueError("output_channels must be a positive integer")
+            x_i = torch.randn(n_sample, output_channels, window_size).to(device)
 
             for i in range(self.n_T, 0, -1):
                 
                 if i > 1:
-                    z = torch.randn(n_sample, 1, window_size).to(device)
+                    z = torch.randn(n_sample, output_channels, window_size).to(device)
 
                 else:
                     z = 0

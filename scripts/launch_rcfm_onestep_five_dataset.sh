@@ -11,7 +11,7 @@ DATASET_REQUEST="$2"
 SEED_REQUEST="$3"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE_ROOT="${RCFM_WORKSPACE_ROOT:-$(cd "$REPO_ROOT/.." && pwd)}"
-RUN_ROOT="${RCFM_RUNS_ROOT:-$WORKSPACE_ROOT/runs/training/rcfm_onestep_facm_five_dataset_v1}"
+RUN_ROOT="${RCFM_RUNS_ROOT:-$WORKSPACE_ROOT/runs/training/rcfm_onestep_cfm50_v2}"
 WORKER="$REPO_ROOT/scripts/run_rcfm_onestep_five_dataset_worker.sh"
 
 if [[ "$DATASET_REQUEST" == "all" ]]; then DATASETS=(ptbxl cpsc2018 mimic_afib wesad mmecg); else DATASETS=("$DATASET_REQUEST"); fi
@@ -50,7 +50,7 @@ nohup env \
 
 PID=$!
 echo "$PID" >"$PID_PATH"
-echo "Started RCFM-OneStep queue on GPU $GPU_INDEX (PID $PID)."
+echo "Started CFM-NFE50 -> RCFM-OneStep queue on GPU $GPU_INDEX (PID $PID)."
 echo "Datasets: ${DATASETS[*]}; seeds: ${SEEDS[*]}"
 echo "Log: $LOG_PATH"
 echo "Run root: $RUN_ROOT/one_step"

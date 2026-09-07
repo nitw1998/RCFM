@@ -26,6 +26,28 @@ made.
 
 ## Frozen base models
 
+The current retraining entry uses completed seed-31, epoch-200 canonical CFM
+checkpoints whose reference sampler was evaluated with NFE=50. FACM consumes
+the frozen CFM velocity field directly at sampled times; it does **not** run a
+50-step ODE inside each FACM update. Each CFM has `region_weight=0`, no
+minibatch OT, and the matched random-window 80/20 data protocol. The new
+configs pin checkpoint kind, epoch, reference NFE, SHA-256, split,
+normalization, and channel contract:
+
+| Config | Task | Train/validation | Target channels |
+|---|---|---:|---:|
+| `facm_cfm50_ptbxl.yaml` | Lead II to other ECG leads | 34,939 / 8,735 | 11 |
+| `facm_cfm50_cpsc2018.yaml` | Lead II to other ECG leads | 19,364 / 4,842 | 11 |
+| `facm_cfm50_mimic.yaml` | PPG to ECG | 8,160 / 2,040 | 1 |
+| `facm_cfm50_wesad.yaml` | PPG to ECG | 17,365 / 4,342 | 1 |
+| `facm_cfm50_mmecg.yaml` | RCG to ECG | 9,973 / 2,494 | 1 |
+
+The older `facm_{dataset}.yaml` files and their validator profile remain for
+reproducing the already completed epoch-500 RCFM-teacher experiment. They are
+not selected by the current aggregate launcher.
+
+### Legacy RCFM-teacher profile
+
 FACM initialization and the frozen training-only teacher use completed seed-31,
 epoch-500 canonical RCFM checkpoints. All five teachers use the linear
 noise-at-0/data-at-1 path, region weight 0.01 during original RCFM training,
@@ -47,7 +69,7 @@ SHA-256, split, normalization and channel contract:
 |---|---|---|
 | Signal shape | `(B,C,H,W)` image latent | `(B,C,T)` ECG |
 | Interpolant | `x_t=t*x_1+(1-t)*x_0` | unchanged |
-| Teacher velocity | frozen pretrained FM at `t` | frozen RCFM flow and frozen PPG encoder at `t` |
+| Teacher velocity | frozen pretrained FM at `t` | frozen audited CFM/legacy RCFM flow and condition encoder at `t` |
 | FM task condition | expanded time `2-t` | unchanged; existing RCFM time embedding accepts `[1,2]` |
 | CM task condition | time `t` | unchanged |
 | JVP tangents | `(teacher velocity, 1)` | unchanged, via `torch.func.jvp` |
@@ -85,7 +107,8 @@ must not be inferred from this training implementation.
 ## Aggregate training entry
 
 The public method name is `RCFM-OneStep`; FACM is recorded as the external
-training method/provenance. To start one dataset and one seed on GPU 0:
+training method/provenance. The aggregate launcher now selects the CFM-NFE50
+profile. To start one dataset and one seed on GPU 0:
 
 ```bash
 bash repo/scripts/launch_rcfm_onestep_five_dataset.sh 0 ptbxl 31
@@ -99,10 +122,10 @@ bash repo/scripts/launch_rcfm_onestep_five_dataset.sh 0 all all
 
 Run these commands from the coordination workspace root. The launcher defaults
 to the audited workspace preprocessing artifacts and
-teacher checkpoints. Dataset roots can be overridden with `PTBXL_DATA_ROOT`,
+CFM checkpoints. Dataset roots can be overridden with `PTBXL_DATA_ROOT`,
 `CPSC2018_DATA_ROOT`, `MIMIC_AFIB_DATA_ROOT`, `WESAD_DATA_ROOT`, and
-`MMECG_DATA_ROOT`; teacher paths have corresponding
-`RCFM_FACM_<DATASET>_TEACHER_CHECKPOINT` variables. `RCFM_RUNS_ROOT`,
+`MMECG_DATA_ROOT`; checkpoint paths have corresponding
+`RCFM_ONESTEP_<DATASET>_CFM_CHECKPOINT` variables. `RCFM_RUNS_ROOT`,
 `RCFM_WORKSPACE_ROOT`, `RCFM_PYTHON`, and `WANDB_MODE` are also configurable.
 Set `RCFM_WORKSPACE_ROOT` explicitly when invoking the script from the physical
 Git worktree rather than through the coordination workspace. The queue runs in the
@@ -116,9 +139,9 @@ Set local paths without adding them to the config:
 ```bash
 export RCFM_DATA_ROOT=/path/to/data
 export RCFM_RUNS_ROOT=/path/to/runs
-export RCFM_FACM_TEACHER_CHECKPOINT=/path/to/checkpoint_epoch_500.pt
+export RCFM_FACM_TEACHER_CHECKPOINT=/path/to/cfm_checkpoint_epoch_200.pt
 python scripts/train_facm_acceleration.py \
-  --config configs/one_step/facm_mimic.yaml \
+  --config configs/one_step/facm_cfm50_mimic.yaml \
   --device cuda:0
 ```
 

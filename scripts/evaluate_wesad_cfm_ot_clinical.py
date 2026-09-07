@@ -42,7 +42,10 @@ from src.rcfm.metrics.bland_altman import bland_altman, paired_correlation
 
 
 MODELS = ("cfm", "cfm_ot")
-MODEL_LABELS = {"cfm": "CFM", "cfm_ot": "CFM+OT"}
+MODEL_LABELS = {
+    "cfm": "CFM", "cfm_ot": "CFM+OT", "rcfm": "RCFM", "rcfm_ot": "RCFM-OT",
+    "rddm": "RDDM-PPG",
+}
 LABELS = {1: "baseline", 2: "stress", 3: "amusement", 4: "meditation"}
 HRV_PARAMETERS = ("mean_rr_ms", "heart_rate_bpm", "sdnn_ms", "rmssd_ms", "pnn50_percent")
 
@@ -137,6 +140,11 @@ def _plot_hrv(output: Path, rows: list[dict[str, object]], model: str) -> list[P
 
 
 def run(args: argparse.Namespace) -> Path:
+    global MODELS
+    MODELS = tuple(args.models)
+    unsupported = sorted(set(MODELS) - set(MODEL_LABELS))
+    if not MODELS or unsupported or len(MODELS) != len(set(MODELS)):
+        raise ValueError(f"invalid WESAD clinical models: {unsupported}")
     output = args.output_dir.resolve()
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"refusing to overwrite nonempty output directory: {output}")
@@ -259,6 +267,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--sampling_rate", type=float, default=128.0)
     parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--models", nargs="+", default=list(MODELS))
     return parser
 
 

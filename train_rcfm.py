@@ -223,6 +223,23 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--output_dir", default=os.environ.get("RCFM_RUNS_ROOT"))
     parser.add_argument("--config", default=None, help="JSON-formatted resolved-config template.")
     parser.add_argument("--run_id", default=None)
+    parser.add_argument(
+        "--resume_checkpoint",
+        default=None,
+        help="Schema-2 checkpoint used for strict stateful continuation into a new run directory.",
+    )
+    parser.add_argument(
+        "--resume_lr_policy",
+        choices=["restart_cosine"],
+        default="restart_cosine",
+        help="Resume policy: retain AdamW moments but restart base LR over remaining epochs.",
+    )
+    parser.add_argument(
+        "--resume_restart_lr",
+        type=float,
+        default=None,
+        help="Peak LR for restart_cosine; defaults to the original --lr.",
+    )
     parser.add_argument("--dataset_version", default=None)
     parser.add_argument("--split_hash", default=None)
     parser.add_argument(
@@ -231,6 +248,9 @@ def build_argparser() -> argparse.ArgumentParser:
             "training_global_zscore_v1",
             "record_zscore_v1",
             "record_minmax_neg1_1_v1",
+            "record_joint12_minmax_neg1_1_v1",
+            "source_record_joint12_minmax_neg1_1_v1",
+            "source_record_minmax_neg1_1_v1",
             "rddm_window_minmax_neg1_1_v1",
             "window_minmax_neg1_1_v1",
         ],

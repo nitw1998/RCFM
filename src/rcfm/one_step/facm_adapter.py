@@ -38,14 +38,14 @@ def _flow_state(model_state: Mapping[str, Any]) -> dict[str, Any]:
         key[len(prefix) :]: value for key, value in model_state.items() if key.startswith(prefix)
     }
     if not selected or len(selected) != len(model_state):
-        raise ValueError("base RCFM model_state must contain only flow_model.* parameters")
+        raise ValueError("base flow model_state must contain only flow_model.* parameters")
     return selected
 
 
 def validate_facm_base(
     checkpoint: Mapping[str, Any], expected_protocol: Mapping[str, Any]
 ) -> None:
-    """Validate that a FACM teacher is the declared canonical RCFM run."""
+    """Validate that a FACM teacher matches its frozen base-model contract."""
 
     config = checkpoint["config"]
     expected = {
@@ -61,11 +61,14 @@ def validate_facm_base(
     expected.update({
         "flow_matcher": "conditional",
         "sigma": 0.0,
-        "region_weight": 0.01,
-        "use_minibatch_ot": False,
+        "region_weight": expected_protocol.get("base_region_weight", 0.01),
+        "use_minibatch_ot": expected_protocol.get("base_use_minibatch_ot", False),
+        "inference_steps": expected_protocol.get("base_inference_steps", 50),
     })
     mismatched = [key for key, value in expected.items() if config.get(key) != value]
-    if checkpoint.get("kind") != "canonical_multistep_rcfm":
+    if checkpoint.get("kind") != expected_protocol.get(
+        "base_checkpoint_kind", "canonical_multistep_rcfm"
+    ):
         mismatched.append("kind")
     dataset = expected_protocol["datasets"]
     if config.get("datasets") not in ([dataset], dataset):
@@ -127,7 +130,7 @@ def build_facm_training_models(
 
     actual_sha256 = sha256_file(checkpoint_path)
     if expected_sha256 is not None and actual_sha256 != expected_sha256:
-        raise ValueError("base RCFM checkpoint SHA-256 does not match the frozen config")
+        raise ValueError("base checkpoint SHA-256 does not match the frozen config")
     checkpoint = load_checkpoint(checkpoint_path, map_location="cpu")
     if expected_protocol is None:
         validate_mimic_facm_base(checkpoint)

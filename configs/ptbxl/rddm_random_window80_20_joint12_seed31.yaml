@@ -1,0 +1,21 @@
+{
+  "task": "ecg2ecg", "datasets": "PTBXL",
+  "dataset_version": "ptbxl-1.0.1-random-window80-20-record-overlap-source-record-joint12-full10s-minmax-neg1-1-v2",
+  "split_hash": "9ba296dc33ef6f29f9368ae4d1dd61feceb9366100b7b4afbc8698ea7592012c",
+  "normalization_id": "source_record_joint12_minmax_neg1_1_v1",
+  "alignment_id": "ptbxl_all_records_two_nonoverlap_4s_windows_random80_20_seed31_lead_II_to_other11_v1",
+  "condition_lead_index": 1, "target_lead_indices": [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  "heldout_split": "val", "window_size": 4,
+  "expected_train_windows": 34939, "expected_test_windows": 8735,
+  "epochs": 200, "batch_size": 128, "num_workers": 2,
+  "learning_rate": 0.0001, "weight_decay": 0.01, "scheduler_t_max": 1000,
+  "save_every": 200, "nT": 10, "beta_start": 0.0001, "beta_end": 0.2,
+  "attention_heads": 8, "condition_drop_probability": 0.0,
+  "ddpm_loss_weight": 100.0, "region_loss_weight": 1.0,
+  "seed": 31, "device": "cuda:0", "log_interval_steps": 10,
+  "wandb_mode": "online", "wandb_project": "RCFM",
+  "wandb_group": "ptbxl-rddm-random-window80-20-joint12", "wandb_job_type": "train",
+  "upstream_repository": "https://github.com/DebadityaQU/RDDM",
+  "upstream_commit": "7d5348843c3985c211a23ae5105a2d9497d5156a",
+  "upstream_license": "MIT", "reproduction_label": "RDDM-ECG (random-window adapted)"
+}

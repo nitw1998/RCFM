@@ -2,8 +2,8 @@
 """Train an RCFM-OneStep deployment model with the FACM objective.
 
 FACM is an external deployment-optimization method (Peng et al., 2025), not
-an original RCFM contribution. The frozen multistep RCFM is used only while
-training; saved student checkpoints contain no teacher parameters.
+an original RCFM contribution. A frozen audited multistep flow model is used
+only while training; saved student checkpoints contain no teacher parameters.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from src.rcfm.one_step.facm_loss_1d import FACMLoss1D  # noqa: E402
 from train_rcfm import build_datasets, set_deterministic  # noqa: E402
 
 
-FROZEN_DATA_PROTOCOLS = {
+LEGACY_RCFM_DATA_PROTOCOLS = {
     "PTBXL": {
         "task": "ecg2ecg", "dataset_version": "ptbxl-1.0.1-official-folds-record-minmax-neg1-1-v1",
         "split_hash": "7784c98a2c8daccc23fc7cb0d47dc1933eeee77f120c05f8a24ac149cd8474f7",
@@ -82,6 +82,73 @@ FROZEN_DATA_PROTOCOLS = {
         "expected_train_windows": 9590, "expected_heldout_windows": 2877,
         "heldout_split": "test", "condition_lead_index": None, "target_lead_indices": None,
     },
+}
+
+CFM_NFE50_DATA_PROTOCOLS = {
+    "PTBXL": {
+        "task": "ecg2ecg",
+        "dataset_version": "ptbxl-1.0.1-random-window80-20-record-overlap-source-record-joint12-full10s-minmax-neg1-1-v2",
+        "split_hash": "9ba296dc33ef6f29f9368ae4d1dd61feceb9366100b7b4afbc8698ea7592012c",
+        "normalization_id": "source_record_joint12_minmax_neg1_1_v1",
+        "alignment_id": "ptbxl_all_records_two_nonoverlap_4s_windows_random80_20_seed31_lead_II_to_other11_v1",
+        "expected_train_windows": 34939, "expected_heldout_windows": 8735,
+        "heldout_split": "val", "condition_lead_index": 1,
+        "target_lead_indices": [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    },
+    "CPSC2018": {
+        "task": "ecg2ecg",
+        "dataset_version": "cpsc2018-source-fullrecord-joint12-minmax-all-nonoverlap4s-random80-20-record-overlap-v1",
+        "split_hash": "b7902b112219541e795bac4f020ef268b2951f0c3f80709f0a06f18132a743d8",
+        "normalization_id": "source_record_joint12_minmax_neg1_1_v1",
+        "alignment_id": "cpsc2018_all_complete_nonoverlap_4s_windows_random80_20_seed31_lead_II_to_other11_v1",
+        "expected_train_windows": 19364, "expected_heldout_windows": 4842,
+        "heldout_split": "val", "condition_lead_index": 1,
+        "target_lead_indices": [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    },
+    "MIMIC-AFib": {
+        "task": "ppg2ecg",
+        "dataset_version": "mimic-afib-all-qc-windows-random80-20-subject-record-overlap-rddm-window-minmax-v1",
+        "split_hash": "8b862a432969db8e13dd5cec18928f96486b983f6147fbc2ad2d8cfb4fc96232",
+        "normalization_id": "rddm_window_minmax_neg1_1_v1",
+        "alignment_id": "paired_source_row_no_phase_correction_random80_20_v1",
+        "expected_train_windows": 8160, "expected_heldout_windows": 2040,
+        "heldout_split": "test", "condition_lead_index": None,
+        "target_lead_indices": None,
+    },
+    "WESAD": {
+        "task": "ppg2ecg",
+        "dataset_version": "wesad-all-windows-random80-20-subject-overlap-linear-resample-source-record-minmax-v2",
+        "split_hash": "ef5687b00e5cc3809a8ac3d6b95d05671ee18b37182e04fd7635fe6657a3906c",
+        "normalization_id": "source_record_minmax_neg1_1_v1",
+        "alignment_id": "native_common_start_same_window_no_delay_correction_random80_20_v1",
+        "expected_train_windows": 17365, "expected_heldout_windows": 4342,
+        "heldout_split": "test", "condition_lead_index": None,
+        "target_lead_indices": None,
+    },
+    "mmECG": {
+        "task": "rcg2ecg",
+        "dataset_version": "mmecg-all-windows-random80-20-subject-record-overlap-window-minmax-v1",
+        "split_hash": "6e5365be9b71c3815907eeabab2ee6b83a11a280521243a1f79c4f90da570dc2",
+        "normalization_id": "window_minmax_neg1_1_v1",
+        "alignment_id": "same_record_same_window_no_delay_correction_random80_20_v1",
+        "expected_train_windows": 9973, "expected_heldout_windows": 2494,
+        "heldout_split": "test", "condition_lead_index": None,
+        "target_lead_indices": None,
+    },
+}
+
+for protocol in CFM_NFE50_DATA_PROTOCOLS.values():
+    protocol.update({
+        "base_checkpoint_kind": "canonical_multistep_cfm",
+        "base_epoch": 200,
+        "base_region_weight": 0.0,
+        "base_use_minibatch_ot": False,
+        "base_inference_steps": 50,
+    })
+
+FROZEN_DATA_PROTOCOLS = {
+    "legacy_rcfm": LEGACY_RCFM_DATA_PROTOCOLS,
+    "cfm_nfe50": CFM_NFE50_DATA_PROTOCOLS,
 }
 
 
@@ -165,6 +232,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--expected_train_windows", type=int, default=8400)
     parser.add_argument("--expected_heldout_windows", type=int, default=1800)
     parser.add_argument("--expected_base_checkpoint_sha256", default=None)
+    parser.add_argument("--base_model_family", choices=sorted(FROZEN_DATA_PROTOCOLS), default="legacy_rcfm")
     parser.add_argument("--facm_upstream_commit", default=FACM_UPSTREAM_COMMIT)
     parser.add_argument("--facm_time_strategy", default="expanded_time_interval")
     parser.add_argument("--facm_teacher_mode", default="conditional_no_cfg")
@@ -194,11 +262,12 @@ def validate_args(args: argparse.Namespace) -> None:
     missing_paths = [key for key, value in required_paths.items() if not value]
     if missing_paths:
         raise ValueError("missing required FACM paths: " + ", ".join(missing_paths))
-    if args.datasets not in FROZEN_DATA_PROTOCOLS:
+    protocols = FROZEN_DATA_PROTOCOLS[args.base_model_family]
+    if args.datasets not in protocols:
         raise ValueError(f"unsupported FACM dataset: {args.datasets}")
-    protocol = FROZEN_DATA_PROTOCOLS[args.datasets]
+    protocol = protocols[args.datasets]
     expected = {
-        **protocol,
+        **{key: value for key, value in protocol.items() if not key.startswith("base_")},
         "facm_upstream_commit": FACM_UPSTREAM_COMMIT,
         "facm_time_strategy": "expanded_time_interval",
         "facm_teacher_mode": "conditional_no_cfg",
@@ -238,7 +307,7 @@ def train(args: argparse.Namespace) -> Path:
         raise RuntimeError("CUDA requested but unavailable")
     teacher_path = Path(args.teacher_checkpoint).resolve()
     if not teacher_path.is_file():
-        raise FileNotFoundError("frozen base RCFM checkpoint does not exist")
+        raise FileNotFoundError("frozen base flow checkpoint does not exist")
 
     train_set, heldout_set = build_datasets(
         task=args.task,
@@ -252,7 +321,7 @@ def train(args: argparse.Namespace) -> Path:
         heldout_split=args.heldout_split,
         max_train_records=args.max_train_records,
         max_heldout_records=args.max_heldout_records,
-        return_region_mask_train=True,
+        return_region_mask_train=False,
     )
     expected_train = min(args.expected_train_windows, args.max_train_records) if args.max_train_records else args.expected_train_windows
     expected_heldout = min(args.expected_heldout_windows, args.max_heldout_records) if args.max_heldout_records else args.expected_heldout_windows
@@ -271,7 +340,10 @@ def train(args: argparse.Namespace) -> Path:
         teacher_path,
         device=device,
         expected_sha256=args.expected_base_checkpoint_sha256,
-        expected_protocol={**FROZEN_DATA_PROTOCOLS[args.datasets], "datasets": args.datasets},
+        expected_protocol={
+            **FROZEN_DATA_PROTOCOLS[args.base_model_family][args.datasets],
+            "datasets": args.datasets,
+        },
     )
     parameters = models.trainable_parameters()
     optimizer = torch.optim.AdamW(
@@ -311,7 +383,8 @@ def train(args: argparse.Namespace) -> Path:
             "base_checkpoint_sha256": models.base_checkpoint_sha256,
             "base_checkpoint_epoch": models.base_checkpoint["epoch"],
             "base_checkpoint_inference_nfe": models.base_checkpoint["config"]["inference_steps"],
-            "student_initialization": "exact_base_rcfm_weights",
+            "base_model_family": args.base_model_family,
+            "student_initialization": f"exact_base_{args.base_model_family}_weights",
             "teacher_online_at_inference": False,
             "region_mask_used_by_facm": False,
             "ot_used_by_facm": False,
@@ -413,7 +486,7 @@ def train(args: argparse.Namespace) -> Path:
             epoch_values: dict[str, list[float]] = {}
             batch_count = 0
             progress = tqdm(loader, desc=f"FACM epoch {epoch_index + 1}/{args.epochs}")
-            for batch_index, (target, condition, _region_mask) in enumerate(progress):
+            for batch_index, (target, condition) in enumerate(progress):
                 target = target.float().to(device)
                 condition = condition.float().to(device)
                 with torch.no_grad():

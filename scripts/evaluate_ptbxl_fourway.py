@@ -114,7 +114,9 @@ def _validate_flow_contracts(contracts: Mapping[str, Mapping[str, object]]) -> N
         raise ValueError("RCFM-OT must use exact minibatch OT")
 
 
-def _validate_rddm_checkpoint(checkpoint: Mapping[str, object]) -> None:
+def _validate_rddm_checkpoint(
+    checkpoint: Mapping[str, object], expected_training_seed: int = 31
+) -> None:
     required = {
         "schema_version", "kind", "epoch", "global_step", "rddm_state",
         "condition_1_state", "condition_2_state", "config", "normalization", "provenance",
@@ -131,7 +133,7 @@ def _validate_rddm_checkpoint(checkpoint: Mapping[str, object]) -> None:
         "ptbxl_official_folds_first4s_same_record_lead_II_to_other11_v1",
         "condition_lead_index": 1, "target_lead_indices": list(TARGET_INDICES),
         "target_channels": 11, "window_size": 4, "nT": 10, "attention_heads": 8,
-        "seed": 31, "reproduction_label": "RDDM-ECG (adapted)",
+        "seed": expected_training_seed, "reproduction_label": "RDDM-ECG (adapted)",
     }
     bad = [key for key, value in expected.items() if config.get(key) != value]
     if bad:
@@ -190,9 +192,10 @@ def _generate_rddm(
     batch_size: int,
     sampling_seed: int,
     device: torch.device,
+    expected_training_seed: int = 31,
 ) -> tuple[np.ndarray, dict[str, object]]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    _validate_rddm_checkpoint(checkpoint)
+    _validate_rddm_checkpoint(checkpoint, expected_training_seed)
     config = checkpoint["config"]
     channels, length = int(config["target_channels"]), int(config["window_size"]) * 128
     model = RDDM(
@@ -236,9 +239,16 @@ def _generate_rddm(
     return predictions, metadata
 
 
-def _metric_summary(reference: np.ndarray, generated: np.ndarray, include_fd: bool = True) -> tuple[dict[str, object], dict[str, np.ndarray]]:
+def _metric_summary(
+    reference: np.ndarray,
+    generated: np.ndarray,
+    include_fd: bool = True,
+    target_leads: tuple[str, ...] = TARGET_LEADS,
+) -> tuple[dict[str, object], dict[str, np.ndarray]]:
     if reference.shape != generated.shape or reference.ndim != 3:
         raise ValueError("metrics require matching (records, leads, samples) arrays")
+    if len(target_leads) != reference.shape[1]:
+        raise ValueError("target lead labels must match the waveform channel count")
     error = generated.astype(np.float64) - reference.astype(np.float64)
     per_record = {
         "rmse": np.sqrt(np.mean(error ** 2, axis=(1, 2))),
@@ -252,7 +262,7 @@ def _metric_summary(reference: np.ndarray, generated: np.ndarray, include_fd: bo
     agreement.pop("pair_means"); agreement.pop("differences")
     per_lead = {}
     lead_fds = []
-    for index, lead in enumerate(TARGET_LEADS):
+    for index, lead in enumerate(target_leads):
         lead_error = error[:, index]
         lead_correlation = paired_correlation(reference[:, index].reshape(-1), generated[:, index].reshape(-1))
         lead_correlation.update({"p_value": None, "inference_status": "blocked_autocorrelated_time_samples"})
@@ -275,7 +285,9 @@ def _metric_summary(reference: np.ndarray, generated: np.ndarray, include_fd: bo
     summary = {
         "rmse": float(np.sqrt(np.mean(error ** 2))), "mae": float(np.mean(np.abs(error))),
         "bias": float(np.mean(error)), "waveform_fd_macro_lead": float(np.mean(lead_fds)) if lead_fds else None,
-        "waveform_fd_definition": "mean of 11 independent 512-sample lead FDs",
+        "waveform_fd_definition": (
+            f"mean of {len(target_leads)} independent 512-sample lead/channel FDs"
+        ),
         "pointwise_correlation_descriptive_only": point_correlation,
         "pointwise_bland_altman_descriptive_only": agreement,
         "per_record_pearson_mean": float(np.mean(finite_record_correlation)) if len(finite_record_correlation) else None,

@@ -173,15 +173,26 @@ class CATransformer(nn.Module):
 
 
 class CATECGAdapter(nn.Module):
-    """CAT backbone plus an explicit multi-lead ECG adaptation head."""
+    """CAT-ECG adaptation with shared cycle analysis and lead-specific decoders.
+
+    The first CAT block is shared because every output lead is conditioned on the
+    same source Lead II waveform. Each target lead then has an independent
+    second CAT block, providing lead-specific temporal capacity instead of
+    producing affine copies of one latent waveform.
+    """
 
     def __init__(self, output_channels: int, **cat_kwargs) -> None:
         super().__init__()
         if output_channels <= 1:
             raise ValueError("CAT-ECG adaptation requires more than one output lead")
-        self.backbone = CATransformer(output_channels=1, **cat_kwargs)
+        cat_layers = int(cat_kwargs.pop("cat_layers", 2))
+        if cat_layers != 2:
+            raise ValueError("lead-specific CAT-ECG adaptation requires exactly two CAT layers")
         self.output_channels = int(output_channels)
-        self.output_head = nn.Conv1d(1, self.output_channels, kernel_size=1)
+        self.shared_block = CycleAwareTransformerBlock(**cat_kwargs)
+        self.lead_blocks = nn.ModuleList(
+            CycleAwareTransformerBlock(**cat_kwargs) for _ in range(self.output_channels)
+        )
         self.nfe = 1
 
     def forward(
@@ -190,10 +201,25 @@ class CATECGAdapter(nn.Module):
         source_mask: torch.Tensor | None = None,
         return_diagnostics: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, Mapping[str, torch.Tensor]]:
-        values, diagnostics = self.backbone(
-            source, source_mask=source_mask, return_diagnostics=True
-        )
-        output = self.output_head(values)
+        if source.ndim != 3 or source.shape[1:] != (1, self.shared_block.input_length):
+            raise ValueError(
+                f"CAT source must have shape (batch, 1, {self.shared_block.input_length})"
+            )
+        shared, shared_diagnostics = self.shared_block(source, source_mask=source_mask)
+        outputs = []
+        diagnostics = {
+            f"shared_{key}": value for key, value in shared_diagnostics.items()
+        }
+        for lead_index, block in enumerate(self.lead_blocks):
+            values, lead_diagnostics = block(shared, source_mask=source_mask)
+            outputs.append(values)
+            diagnostics.update(
+                {
+                    f"lead_{lead_index}_{key}": value
+                    for key, value in lead_diagnostics.items()
+                }
+            )
+        output = torch.cat(outputs, dim=1)
         if return_diagnostics:
             return output, diagnostics
         return output

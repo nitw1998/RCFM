@@ -153,7 +153,7 @@ class WandbLogger:
         public_config = {
             key: value
             for key, value in config.items()
-            if key not in {"config", "data_root", "output_dir"}
+            if key not in {"config", "data_root", "output_dir", "resume_checkpoint"}
         }
         self.run = wandb.init(
             project=project,

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "Usage: $0 {cfm|cfm_ot|rcfm|rcfm_ot} SEED [SEED ...]" >&2
+  echo "Usage: $0 {cfm|cfm_ot|rcfm|rcfm_ot|rddm} SEED [SEED ...]" >&2
   exit 2
 fi
 
@@ -15,32 +15,37 @@ DATA_ROOT="${CPSC2018_DATA_ROOT:?Set CPSC2018_DATA_ROOT to the frozen preprocess
 RUN_ROOT="${RCFM_RUNS_ROOT:-$REPO_ROOT/runs/training/cpsc2018_factorial_multiseed_v1}"
 WANDB_MODE="${WANDB_MODE:-online}"
 WANDB_GROUP="cpsc2018-core-factorial-multiseed-v1"
-EXTRA_ARGS=(--validation_interval_epochs 1 --wandb_mode "$WANDB_MODE")
+EXTRA_ARGS=(--wandb_mode "$WANDB_MODE")
 
 case "$VARIANT" in
   cfm)
     ENTRY="train_cfm_compare.py"
     CONFIG="configs/cpsc2018/cfm_compare_record_minmax_neg1_1_no_ot_seed31.yaml"
     RUN_PREFIX="cpsc2018_cfm_no_ot"
-    EXTRA_ARGS+=(--region_weight 0 --no-use_minibatch_ot)
+    EXTRA_ARGS+=(--validation_interval_epochs 1 --region_weight 0 --no-use_minibatch_ot)
     ;;
   cfm_ot)
     ENTRY="train_cfm_ot.py"
     CONFIG="configs/cpsc2018/cfm_ot_record_minmax_neg1_1_seed31.yaml"
     RUN_PREFIX="cpsc2018_cfm_exact_ot"
-    EXTRA_ARGS+=(--region_weight 0 --use_minibatch_ot --ot_method exact --ot_sampling_strategy assignment)
+    EXTRA_ARGS+=(--validation_interval_epochs 1 --region_weight 0 --use_minibatch_ot --ot_method exact --ot_sampling_strategy assignment)
     ;;
   rcfm)
     ENTRY="train_rcfm.py"
     CONFIG="configs/cpsc2018/rcfm_record_minmax_neg1_1_no_ot_seed31.yaml"
     RUN_PREFIX="cpsc2018_rcfm_pan_no_ot"
-    EXTRA_ARGS+=(--no-use_minibatch_ot)
+    EXTRA_ARGS+=(--validation_interval_epochs 1 --no-use_minibatch_ot)
     ;;
   rcfm_ot)
     ENTRY="train_rcfm.py"
     CONFIG="configs/cpsc2018/rcfm_record_minmax_neg1_1_exact_ot_seed31.yaml"
     RUN_PREFIX="cpsc2018_rcfm_pan_exact_ot"
-    EXTRA_ARGS+=(--use_minibatch_ot --ot_method exact --ot_sampling_strategy assignment)
+    EXTRA_ARGS+=(--validation_interval_epochs 1 --use_minibatch_ot --ot_method exact --ot_sampling_strategy assignment)
+    ;;
+  rddm)
+    ENTRY="train_rddm_compare.py"
+    CONFIG="configs/cpsc2018/rddm_adapted_record_minmax_neg1_1_seed31.yaml"
+    RUN_PREFIX="cpsc2018_rddm_ecg_adapted_minmax"
     ;;
   *)
     echo "Unknown CPSC2018 factorial variant: $VARIANT" >&2
@@ -69,7 +74,6 @@ for seed in "${SEEDS[@]}"; do
     --run_id "$RUN_ID" \
     --wandb_group "$WANDB_GROUP" \
     --wandb_job_type multiseed-factorial-train \
-    --wandb_run_name "$RUN_ID" \
     "${EXTRA_ARGS[@]}"
   echo "Completed CPSC2018 $VARIANT seed $seed at $(date --iso-8601=seconds)"
 done

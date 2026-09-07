@@ -134,7 +134,7 @@ def test_cat_output_shape_determinism_diagnostics_and_leakage_guard():
     assert model.nfe == 1
 
 
-def test_cat_ecg_adapter_has_explicit_multilead_head_and_source_only_interface():
+def test_cat_ecg_adapter_has_lead_specific_temporal_blocks_and_source_only_interface():
     model = CATECGAdapter(
         output_channels=11, input_length=64, cat_layers=2, top_k=2,
         patch_width=8, d_model=16, n_heads=4, encoder_layers=1,
@@ -142,7 +142,10 @@ def test_cat_ecg_adapter_has_explicit_multilead_head_and_source_only_interface()
     ).eval()
     output, diagnostics = model(torch.randn(2, 1, 64), return_diagnostics=True)
     assert output.shape == (2, 11, 64)
-    assert model.output_head.kernel_size == (1,)
+    assert len(model.lead_blocks) == 11
+    assert not hasattr(model, "output_head")
+    first_parameters = [next(block.parameters()) for block in model.lead_blocks]
+    assert len({parameter.data_ptr() for parameter in first_parameters}) == 11
     assert model.nfe == 1
     assert diagnostics
     with pytest.raises(TypeError):
@@ -261,6 +264,19 @@ def test_resume_contract_rejects_architecture_change():
         _validate_resume_contract(args, checkpoint)
 
 
+def test_cat_ecg_resume_rejects_superseded_pointwise_adapter_checkpoint():
+    config = (
+        Path(__file__).resolve().parents[1]
+        / "configs/ptbxl/cat_ecg_adapted_record_minmax_seed31.yaml"
+    )
+    args = parse_args_with_config(["--config", str(config)])
+    saved = _resolved_config(args)
+    saved.pop("ecg_adapter_version")
+    checkpoint = {"config": saved, "epoch": 25}
+    with pytest.raises(ValueError, match="ecg_adapter_version"):
+        _validate_resume_contract(args, checkpoint)
+
+
 def test_cat_configs_freeze_reproduction_and_adaptation_labels():
     root = Path(__file__).resolve().parents[1] / "configs"
     cases = {
@@ -274,6 +290,8 @@ def test_cat_configs_freeze_reproduction_and_adaptation_labels():
         assert args.datasets == dataset
         assert args.reproduction_label == label
         assert args.output_channels == channels
+        if label == "CAT-ECG (adapted)":
+            assert args.ecg_adapter_version == "shared_first_lead_specific_second_cat_v2"
         assert args.nfe == 1
         assert args.epochs == 500
         assert args.batch_size == 128

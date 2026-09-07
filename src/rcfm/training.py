@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import platform
 import shlex
 import socket
@@ -10,7 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Mapping
 
 import numpy as np
 import torch
@@ -20,7 +22,12 @@ from tqdm import tqdm
 
 from model import ConditionNet, DiffusionUNetCrossAttention
 from rcfm import RegionAwareConditionalFlowMatching
-from src.rcfm.checkpoint import capture_rng_states, save_checkpoint
+from src.rcfm.checkpoint import (
+    capture_rng_states,
+    load_checkpoint,
+    restore_rng_states,
+    save_checkpoint,
+)
 from src.rcfm.experiment import RunArtifacts, WandbLogger
 from src.rcfm.validation import validate_epoch
 
@@ -84,6 +91,100 @@ def _build_training_loader(
         pin_memory=pin_memory,
         drop_last=False,
     )
+
+
+RESUME_IMMUTABLE_CONFIG_FIELDS = (
+    "model_family",
+    "experiment_role",
+    "task",
+    "datasets",
+    "dataset_version",
+    "split_hash",
+    "normalization_id",
+    "condition_unit",
+    "target_unit",
+    "alignment_id",
+    "condition_lead",
+    "target_lead",
+    "condition_lead_index",
+    "target_lead_index",
+    "target_lead_indices",
+    "window_size",
+    "attention_heads",
+    "flow_matcher",
+    "sigma",
+    "region_weight",
+    "use_minibatch_ot",
+    "ot_method",
+    "ot_reg",
+    "ot_normalize_cost",
+    "ot_strict_mode",
+    "ot_sampling_strategy",
+    "batch_size",
+    "lr",
+    "weight_decay",
+    "warmup_epochs",
+    "grad_clip",
+    "seed",
+    "inference_steps",
+    "validation_fixed_noise_seed",
+    "mask_method",
+)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_resume_contract(
+    resolved: Mapping[str, Any],
+    checkpoint: Mapping[str, Any],
+    *,
+    expected_kind: str,
+    normalization: Mapping[str, Any],
+    output_spec: Mapping[str, Any],
+) -> None:
+    """Reject any resume that changes the scientific or optimizer contract."""
+
+    if int(checkpoint.get("schema_version", 0)) != 2:
+        raise ValueError("resume requires a schema-2 checkpoint with RNG and global-step state")
+    if checkpoint.get("kind") != expected_kind:
+        raise ValueError("resume checkpoint kind disagrees with the requested model")
+    source_epoch = int(checkpoint["epoch"])
+    target_epochs = int(resolved["epochs"])
+    if source_epoch <= 0 or target_epochs <= source_epoch:
+        raise ValueError("resume target epochs must be greater than the checkpoint epoch")
+    source_config = checkpoint["config"]
+    mismatched = [
+        field
+        for field in RESUME_IMMUTABLE_CONFIG_FIELDS
+        if source_config.get(field) != resolved.get(field)
+    ]
+    if mismatched:
+        raise ValueError("resume configuration mismatch: " + ", ".join(mismatched))
+    normalization_fields = ("method", "normalization_id", "condition_unit", "target_unit")
+    if any(
+        checkpoint["normalization"].get(key) != normalization.get(key)
+        for key in normalization_fields
+    ):
+        raise ValueError("resume checkpoint normalization disagrees with the current dataset")
+    output_fields = (
+        "channels",
+        "length",
+        "sampling_rate_hz",
+        "target_lead",
+        "target_leads",
+        "target_lead_indices",
+    )
+    if any(
+        checkpoint["output_spec"].get(key) != output_spec.get(key)
+        for key in output_fields
+    ):
+        raise ValueError("resume checkpoint output specification disagrees with the current run")
 
 
 def run_training(args, dataset_builder: Callable) -> None:
@@ -286,11 +387,86 @@ def run_training(args, dataset_builder: Callable) -> None:
     ).to(device)
     parameters = list(rcfm.parameters()) + list(condition_net.parameters())
     optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = _build_scheduler(optimizer, args.epochs, args.warmup_epochs)
-
     resolved["model_parameter_count"] = sum(
         parameter.numel() for parameter in parameters if parameter.requires_grad
     )
+    checkpoint_kind = (
+        "path_ablation_rcfm"
+        if experiment_role == "path_ablation"
+        else (
+            (
+                "canonical_multistep_cfm_ot"
+                if bool(args.use_minibatch_ot)
+                else "canonical_multistep_cfm"
+            )
+            if model_family == "CFM"
+            else "canonical_multistep_rcfm"
+        )
+    )
+    output_spec = {
+        "channels": target_channels,
+        "length": signal_length,
+        "sampling_rate_hz": 128,
+        "target_lead": args.target_lead,
+        "target_leads": target_leads,
+        "target_lead_indices": target_lead_indices,
+    }
+    resume_payload: dict[str, Any] | None = None
+    resume_source_best_epoch_by_rmse: int | None = None
+    resume_path_value = getattr(args, "resume_checkpoint", None)
+    start_epoch = 0
+    if resume_path_value:
+        if getattr(args, "resume_lr_policy", "restart_cosine") != "restart_cosine":
+            raise ValueError("only restart_cosine is supported for resumed multistep training")
+        restart_lr_value = getattr(args, "resume_restart_lr", None)
+        restart_lr = float(args.lr if restart_lr_value is None else restart_lr_value)
+        if restart_lr <= 0 or restart_lr > float(args.lr):
+            raise ValueError("resume restart LR must be positive and no greater than the original LR")
+        resume_path = Path(resume_path_value).resolve()
+        resume_payload = load_checkpoint(resume_path, map_location=device)
+        source_metadata_path = resume_path.parent / "run_metadata.json"
+        if source_metadata_path.is_file():
+            source_metadata = json.loads(source_metadata_path.read_text(encoding="utf-8"))
+            if source_metadata.get("best_epoch_by_rmse") is not None:
+                resume_source_best_epoch_by_rmse = int(
+                    source_metadata["best_epoch_by_rmse"]
+                )
+        _validate_resume_contract(
+            resolved,
+            resume_payload,
+            expected_kind=checkpoint_kind,
+            normalization=normalization,
+            output_spec=output_spec,
+        )
+        rcfm.load_state_dict(resume_payload["model_state"], strict=True)
+        condition_net.load_state_dict(resume_payload["condition_state"], strict=True)
+        optimizer.load_state_dict(resume_payload["optimizer_state"])
+        for parameter_group in optimizer.param_groups:
+            parameter_group["lr"] = restart_lr
+            parameter_group["initial_lr"] = restart_lr
+        start_epoch = int(resume_payload["epoch"])
+        scheduler = _build_scheduler(optimizer, args.epochs - start_epoch, warmup_epochs=0)
+        resolved.update(
+            {
+                "resume_checkpoint": str(resume_path),
+                "resume_source_checkpoint_sha256": _file_sha256(resume_path),
+                "resume_source_epoch": start_epoch,
+                "resume_source_global_step": int(resume_payload["global_step"]),
+                "resume_source_best_epoch_by_rmse": resume_source_best_epoch_by_rmse,
+                "resume_lr_policy": "restart_cosine",
+                "resume_lr_restart": restart_lr,
+                "resume_remaining_epochs": int(args.epochs - start_epoch),
+                "resume_warmup_epochs": 0,
+                "resume_optimizer_moments_restored": True,
+                "resume_scheduler_state_restored": False,
+                "resume_rng_states_restored": True,
+            }
+        )
+    else:
+        if getattr(args, "resume_restart_lr", None) is not None:
+            raise ValueError("--resume_restart_lr requires --resume_checkpoint")
+        scheduler = _build_scheduler(optimizer, args.epochs, args.warmup_epochs)
+
     repository_root = Path(__file__).resolve().parents[2]
     git_commit, git_dirty, git_status = _repository_state(repository_root)
     resolved.update({"git_commit": git_commit, "git_dirty": git_dirty})
@@ -306,17 +482,31 @@ def run_training(args, dataset_builder: Callable) -> None:
             f"gpu={gpu_model}",
         ]
     )
+    initial_metadata = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "status": "running",
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "subject_metadata_available": False,
+        "clinical_validation_status": "unavailable_without_subject_continuity_metadata",
+    }
+    if resume_payload is not None:
+        initial_metadata.update(
+            {
+                "resume_source_checkpoint_sha256": resolved[
+                    "resume_source_checkpoint_sha256"
+                ],
+                "resume_source_epoch": start_epoch,
+                "resume_source_global_step": int(resume_payload["global_step"]),
+                "resume_source_best_epoch_by_rmse": resume_source_best_epoch_by_rmse,
+                "resume_lr_policy": "restart_cosine",
+                "resume_target_epoch": int(args.epochs),
+            }
+        )
     artifacts = RunArtifacts(
         run_dir,
         resolved,
-        {
-            "schema_version": 1,
-            "run_id": run_id,
-            "status": "running",
-            "started_at_utc": datetime.now(timezone.utc).isoformat(),
-            "subject_metadata_available": False,
-            "clinical_validation_status": "unavailable_without_subject_continuity_metadata",
-        },
+        initial_metadata,
         environment,
         f"commit={git_commit}\ndirty={git_dirty}\n{git_status}",
     )
@@ -343,33 +533,31 @@ def run_training(args, dataset_builder: Callable) -> None:
     ):
         print(f"  {key}={resolved[key]}")
 
-    global_step = 0
-    best_metrics = {
-        "val/rmse": float("inf"),
-        "val/waveform_fd": float("inf"),
-        "val/velocity_mse": float("inf"),
-    }
-    best_epochs: dict[str, int] = {}
+    global_step = int(resume_payload["global_step"]) if resume_payload is not None else 0
+    best_metrics = (
+        {key: float(value) for key, value in resume_payload["best_metrics"].items()}
+        if resume_payload is not None
+        else {
+            "val/rmse": float("inf"),
+            "val/waveform_fd": float("inf"),
+            "val/velocity_mse": float("inf"),
+        }
+    )
+    best_epochs: dict[str, int] = (
+        {"val/rmse": resume_source_best_epoch_by_rmse}
+        if resume_source_best_epoch_by_rmse is not None
+        else {}
+    )
     final_validation: dict[str, float] = {}
     start_time = time.monotonic()
     ot_step_values: dict[str, list[float]] = {}
+    if resume_payload is not None:
+        restore_rng_states(resume_payload["rng_states"])
 
     def checkpoint_payload(epoch_number: int) -> dict:
         return {
             "schema_version": 2,
-            "kind": (
-                "path_ablation_rcfm"
-                if experiment_role == "path_ablation"
-                else (
-                    (
-                        "canonical_multistep_cfm_ot"
-                        if bool(args.use_minibatch_ot)
-                        else "canonical_multistep_cfm"
-                    )
-                    if model_family == "CFM"
-                    else "canonical_multistep_rcfm"
-                )
-            ),
+            "kind": checkpoint_kind,
             "epoch": epoch_number,
             "global_step": global_step,
             "model_state": rcfm.state_dict(),
@@ -378,14 +566,7 @@ def run_training(args, dataset_builder: Callable) -> None:
             "scheduler_state": scheduler.state_dict(),
             "config": resolved,
             "normalization": normalization,
-            "output_spec": {
-                "channels": target_channels,
-                "length": signal_length,
-                "sampling_rate_hz": 128,
-                "target_lead": args.target_lead,
-                "target_leads": target_leads,
-                "target_lead_indices": target_lead_indices,
-            },
+            "output_spec": output_spec,
             "best_metrics": best_metrics,
             "rng_states": capture_rng_states(),
             "provenance": {
@@ -407,7 +588,7 @@ def run_training(args, dataset_builder: Callable) -> None:
         )
 
     try:
-        for epoch in range(args.epochs):
+        for epoch in range(start_epoch, args.epochs):
             rcfm.train()
             condition_net.train()
             epoch_metrics: dict[str, list[float]] = {}
@@ -555,6 +736,11 @@ def run_training(args, dataset_builder: Callable) -> None:
             "mean_ot_cost_reduction_ratio": ot_mean("ot/cost_reduction_ratio"),
             "mean_unique_target_fraction": ot_mean("ot/unique_target_fraction"),
             "training_duration_seconds": time.monotonic() - start_time,
+            "resume_source_epoch": start_epoch if resume_payload is not None else None,
+            "resume_source_global_step": (
+                int(resume_payload["global_step"]) if resume_payload is not None else None
+            ),
+            "resume_lr_policy": "restart_cosine" if resume_payload is not None else None,
             "status": "completed",
         }
         artifacts.update_run_metadata(

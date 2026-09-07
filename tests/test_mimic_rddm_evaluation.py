@@ -52,6 +52,11 @@ def test_checkpoint_contract_accepts_only_frozen_rddm_endpoint():
     checkpoint = _checkpoint()
     _validate_checkpoint(checkpoint)
 
+    checkpoint["config"]["seed"] = 32
+    _validate_checkpoint(checkpoint, expected_training_seed=32)
+    with pytest.raises(ValueError, match="seed"):
+        _validate_checkpoint(checkpoint, expected_training_seed=33)
+
     checkpoint["config"]["nT"] = 50
     with pytest.raises(ValueError, match="nT"):
         _validate_checkpoint(checkpoint)
@@ -63,10 +68,11 @@ class IdentityCondition(nn.Module):
 
 
 class RandomSampler(nn.Module):
-    def forward(self, cond1, cond2, mode, window_size):
+    def forward(self, cond1, cond2, mode, window_size, output_channels):
         assert mode == "sample"
         assert window_size == 512
-        return cond1["values"] * 0 + cond2["values"] * 0 + torch.randn_like(cond1["values"])
+        shape = (len(cond1["values"]), output_channels, window_size)
+        return torch.randn(shape, device=cond1["values"].device)
 
 
 def test_batch_generation_replays_recorded_seed_schedule():
@@ -81,6 +87,15 @@ def test_batch_generation_replays_recorded_seed_schedule():
     np.testing.assert_array_equal(first_indices, second_indices)
     np.testing.assert_array_equal(first_seeds, [2025, 2026])
     np.testing.assert_array_equal(first_seeds, second_seeds)
+
+
+def test_batch_generation_supports_multichannel_rddm_output():
+    conditions = np.zeros((2, 1, 512), dtype=np.float32)
+    generated, _, _ = _generate_batches(
+        RandomSampler(), IdentityCondition(), IdentityCondition(), conditions,
+        2, 2025, torch.device("cpu"), output_channels=11,
+    )
+    assert generated.shape == (2, 11, 512)
 
 
 def test_example_selection_is_stable():

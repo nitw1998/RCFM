@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 || ! "$1" =~ ^[0-9]+$ ]]; then
+  echo "Usage: $0 GPU_INDEX" >&2
+  exit 2
+fi
+
+GPU_INDEX="$1"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="${RCFM_PYTHON:-python}"
+DATA_ROOT="${PTBXL_DATA_ROOT:?Set PTBXL_DATA_ROOT to the directory containing PTBXL/}"
+RUN_ROOT="${RCFM_RUNS_ROOT:?Set RCFM_RUNS_ROOT to the training output root}"
+CONFIG="configs/ptbxl/cfm_legacy_singlelead_iii_to_v5_official_seed42.yaml"
+RUN_ID="ptbxl_legacy_cfm_iii_to_v5_official_s42_v1"
+RUN_DIR="$RUN_ROOT/$RUN_ID"
+LOG_ROOT="$RUN_ROOT/logs"
+PID_ROOT="$RUN_ROOT/pids"
+MPL_ROOT="${MPLCONFIGDIR:-$RUN_ROOT/matplotlib}"
+LAUNCH_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_PATH="$LOG_ROOT/${RUN_ID}_gpu${GPU_INDEX}_${LAUNCH_ID}.log"
+PID_PATH="$PID_ROOT/${RUN_ID}_gpu${GPU_INDEX}_${LAUNCH_ID}.pid"
+
+for path in "$REPO_ROOT/train_ptbxl_legacy_cfm_singlelead.py" "$REPO_ROOT/$CONFIG" "$DATA_ROOT/PTBXL/dataset_manifest.json" "$DATA_ROOT/PTBXL/X_train_resampled.npy" "$DATA_ROOT/PTBXL/X_val_resampled.npy"; do
+  if [[ ! -f "$path" ]]; then
+    echo "Missing required file: $path" >&2
+    exit 1
+  fi
+done
+if [[ -e "$RUN_DIR" ]]; then
+  echo "Refusing to overwrite existing run: $RUN_DIR" >&2
+  exit 1
+fi
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 && [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Python executable is unavailable: $PYTHON_BIN" >&2
+  exit 1
+fi
+if ! nvidia-smi -i "$GPU_INDEX" >/dev/null 2>&1; then
+  echo "GPU $GPU_INDEX is not visible to nvidia-smi." >&2
+  exit 1
+fi
+ACTIVE_PIDS="$(nvidia-smi -i "$GPU_INDEX" --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | tr -d '[:space:]')"
+if [[ -n "$ACTIVE_PIDS" ]]; then
+  echo "GPU $GPU_INDEX already has compute process(es): $ACTIVE_PIDS" >&2
+  exit 1
+fi
+
+mkdir -p "$LOG_ROOT" "$PID_ROOT" "$RUN_ROOT/wandb" "$MPL_ROOT"
+cd "$REPO_ROOT"
+nohup env \
+  CUDA_VISIBLE_DEVICES="$GPU_INDEX" \
+  PYTHONUNBUFFERED=1 \
+  PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-$RUN_ROOT/pycache}" \
+  MPLCONFIGDIR="$MPL_ROOT" \
+  WANDB_DIR="$RUN_ROOT/wandb" \
+  "$PYTHON_BIN" train_ptbxl_legacy_cfm_singlelead.py \
+    --config "$CONFIG" \
+    --data_root "$DATA_ROOT" \
+    --output_dir "$RUN_ROOT" \
+    --run_id "$RUN_ID" \
+    >"$LOG_PATH" 2>&1 &
+
+PID=$!
+echo "$PID" >"$PID_PATH"
+echo "Started unchanged legacy CFM PTB-XL III-to-V5 seed 42 on GPU $GPU_INDEX."
+echo "Run ID: $RUN_ID"
+echo "PID: $PID"
+echo "Log: $LOG_PATH"
+echo "Run directory: $RUN_DIR"

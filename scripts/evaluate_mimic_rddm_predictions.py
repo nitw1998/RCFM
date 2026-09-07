@@ -50,7 +50,7 @@ EXPECTED_UPSTREAM_COMMIT = "7d5348843c3985c211a23ae5105a2d9497d5156a"
 EXPECTED_SPLIT_HASH = "a7e388293adaa7b48d3493efc505dd8750520730cae9fd7649157866efa86a51"
 
 
-def _validate_checkpoint(payload: Mapping[str, object]) -> None:
+def _validate_checkpoint(payload: Mapping[str, object], expected_training_seed: int = 31) -> None:
     required = {
         "schema_version",
         "kind",
@@ -85,7 +85,7 @@ def _validate_checkpoint(payload: Mapping[str, object]) -> None:
         "expected_test_windows": 1800,
         "nT": 10,
         "attention_heads": 8,
-        "seed": 31,
+        "seed": expected_training_seed,
         "upstream_commit": EXPECTED_UPSTREAM_COMMIT,
     }
     mismatched = [key for key, value in expected.items() if config.get(key) != value]
@@ -148,12 +148,17 @@ def _generate_batches(
     batch_size: int,
     sampling_seed: int,
     device: torch.device,
+    output_channels: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if conditions.ndim != 3 or conditions.shape[1:] != (1, 512):
         raise ValueError("RDDM conditions must have shape (records,1,512)")
-    if batch_size <= 0 or sampling_seed < 0:
-        raise ValueError("batch size must be positive and sampling seed nonnegative")
-    predictions = np.empty_like(conditions, dtype=np.float32)
+    if batch_size <= 0 or sampling_seed < 0 or output_channels <= 0:
+        raise ValueError(
+            "batch size/output channels must be positive and sampling seed nonnegative"
+        )
+    predictions = np.empty(
+        (len(conditions), output_channels, conditions.shape[-1]), dtype=np.float32
+    )
     batch_indices = np.empty(len(conditions), dtype=np.int32)
     batch_seeds = []
     cuda_devices = [device.index or 0] if device.type == "cuda" else []
@@ -172,6 +177,7 @@ def _generate_batches(
                 cond2=encoded_2,
                 mode="sample",
                 window_size=conditions.shape[-1],
+                output_channels=output_channels,
             )
         predictions[start:stop] = generated.detach().cpu().numpy()
         batch_indices[start:stop] = batch_index
@@ -298,7 +304,7 @@ def run(args: argparse.Namespace) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = args.checkpoint.resolve()
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    _validate_checkpoint(checkpoint)
+    _validate_checkpoint(checkpoint, args.expected_training_seed)
     config = dict(checkpoint["config"])
     normalization = dict(checkpoint["normalization"])
     dataset_dir = args.data_root.resolve() / "MIMIC-AFib"
@@ -458,6 +464,7 @@ def run(args: argparse.Namespace) -> Path:
             "batch_seed_rule": "sampling_seed_base + zero_based_batch_index",
             "sampling_batch_seeds": batch_seeds.tolist(),
             "deterministic_seed": args.deterministic_seed,
+            "training_seed": args.expected_training_seed,
             "prediction_sha256": _array_sha256(predictions),
             "target_sha256": _array_sha256(targets),
             "condition_sha256": _array_sha256(conditions),
@@ -506,6 +513,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--sampling_seed", type=int, default=2025)
     parser.add_argument("--deterministic_seed", type=int, default=31)
+    parser.add_argument("--expected_training_seed", type=int, default=31)
     parser.add_argument("--sampling_rate", type=int, default=128)
     parser.add_argument("--max_lag_samples", type=int, default=64)
     parser.add_argument("--expected_records", type=int, default=1800)

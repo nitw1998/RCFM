@@ -15,13 +15,14 @@ The executable experiments apply the architecture to frozen local MIMIC-AFib
 and WESAD PPG-to-ECG artifacts. They do not reproduce the paper's pooled
 five-data set, participant-level 80/20 split, five-fold protocol, or reported
 table values. PTB-XL and CPSC2018 use a separately labelled `CAT-ECG (adapted)`
-entry: Lead II alone drives source-only cycle extraction, and an explicit
-learned pointwise head maps the paper's single-channel CAT output to the other
-11 leads. That head is `adaptation-required`, is not paper-explicit, and must
-not be described as part of the official or reproduced CAT architecture. A
-shared CAT backbone plus this output head, rather than 11 independent CAT
-networks, is an `author-choice` that keeps the comparator's resource cost
-within the same order as the original single-output model.
+entry: Lead II alone drives source-only cycle extraction; the first CAT block
+is shared and each of the other 11 leads has an independent second CAT block.
+This shared-first/lead-specific-second design is `adaptation-required` and an
+`author-choice`, not part of the official or reproduced CAT architecture. It
+replaces an earlier pointwise 1-to-11 head that could only produce affine
+copies of one latent waveform. Checkpoints from that earlier head are
+incompatible with version `shared_first_lead_specific_second_cat_v2` and are
+not valid multi-lead evidence.
 
 MMECG is separately labelled `CAT-RCG (adapted)`. It retains the paper's
 single-input/single-output architecture but substitutes energy-weighted RCG
@@ -42,6 +43,7 @@ for PPG; dominant cycles are extracted from RCG only. This modality change is
 | Reconstruction | Sec. III-B, Eq. (7): flatten and truncate to the original length | `CycleAwareTransformerBlock._restore` | `(B,1,512)`; deterministic tail fill is logged only if encoded support is insufficient | `paper-explicit` plus defensive fallback | Flatten/truncate/tail test |
 | Aggregation | Sec. III-C, Eqs. (8)-(9): softmax FFT amplitudes and weighted branch sum | `CycleAwareTransformerBlock.forward` | two weights per record | `paper-explicit` | Determinism and diagnostic tests |
 | Repeated block/output | Algorithm 1 and Sec. III-C: repeat the block twice and return the second output | `CATransformer.forward` | single ECG channel, no extra output projection | `paper-explicit` | State-dict guard rejects an added projection; multi-lead output rejected |
+| ECG modality adaptation | Not defined by the PPG-to-ECG paper | `CATECGAdapter` | shared first CAT block plus 11 lead-specific second CAT blocks | `adaptation-required`; `author-choice` | independent-block and 11-channel shape tests; old pointwise-head checkpoints rejected |
 | Objective | Sec. III-C, Eq. (10): MSE plus KL divergence | `CATLoss` | softmax over 512 time samples, temperature 1, KL weight 1 | `paper-explicit` objective; `paper-inferred` probability axis; `author-choice` temperature/weight | Finite backward test |
 | Optimization | Sec. IV-A: Adam, batch 128, learning rate `1e-4` | `scripts/train_cat.py` and frozen config | 500 epochs, seed 31, AMP, gradient clip 1 | `paper-explicit` optimizer/batch/LR; `author-choice` epochs/seed/AMP/clip | CPU and GPU batch-128 smoke |
 | Inference | Algorithm 1 is a deterministic forward map | `CATransformer.forward`, `scripts/evaluate_cat.py` | `NFE=1`; cycle extraction accepts source PPG only | `paper-explicit` | Target-argument leakage guard and repeated-forward test |
@@ -83,6 +85,23 @@ Finite-loss AMP gradient overflow is recorded as `amp_overflow_rate`; the
 optimizer update is skipped and `GradScaler` lowers its scale before training
 continues. A nonfinite forward loss, or nonfinite gradients without AMP,
 remains a fatal error.
+
+The repository-wide training dispatcher is
+`scripts/train_evidence_appendix_c.sh`. It maps both `cat` and `direct_cnn`
+to the frozen five-dataset configurations used by Evidence Appendix C. For
+example, from the repository root:
+
+```bash
+RCFM_DATA_ROOT=/path/to/frozen/preprocessing \
+RCFM_RUNS_ROOT=/path/to/runs \
+bash scripts/train_evidence_appendix_c.sh cat wesad --wandb_mode online
+```
+
+Use `--dry-run` immediately after the dataset name to inspect the resolved
+trainer/config command without starting training. Trainer arguments placed
+after the dataset (or after `--dry-run`) are forwarded verbatim. The dispatcher
+supports `mimic_afib`, `ptbxl`, `cpsc2018`, `wesad`, and `mmecg`; run outputs
+must remain outside the Git repository.
 
 The isolated workspace launcher is `scripts/launch_cat_ppg_mimic_gpu5.sh`.
 Run it from the coordination workspace, not from the linked repository. For a

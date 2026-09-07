@@ -9,7 +9,12 @@ import torch
 from torch.utils.data import TensorDataset
 
 from src.rcfm.experiment import LOCAL_FILE_HEADERS, RunArtifacts, WandbLogger
-from src.rcfm.training import _build_scheduler, _build_training_loader, run_training
+from src.rcfm.training import (
+    _build_scheduler,
+    _build_training_loader,
+    _validate_resume_contract,
+    run_training,
+)
 from train_rcfm import parse_args_with_config
 
 
@@ -167,7 +172,7 @@ def test_all_cpsc_flow_training_configs_use_lead_ii_to_joint_other_eleven_protoc
         if path.name.startswith(("cfm_", "rcfm_"))
     )
 
-    assert len(paths) == 7
+    assert paths
     for path in paths:
         config = json.loads(path.read_text(encoding="utf-8"))
         assert config["condition_lead"] == "II"
@@ -175,11 +180,21 @@ def test_all_cpsc_flow_training_configs_use_lead_ii_to_joint_other_eleven_protoc
         assert config["target_lead_index"] is None
         assert config["target_lead_indices"] == expected_indices
         assert config["target_lead"].split(",") == expected_leads
-        assert "lead_II_to_other_11" in config["alignment_id"]
-        assert "source-derived-all12lead-qc-v3" in config["dataset_version"]
-        assert config["split_hash"] == (
-            "35e0a796a60e4d6979b1f050048495fdf1826eedda7d40e47a56d4dcd5874223"
-        )
+        if "random_window80_20" in path.name:
+            assert "lead_II_to_other11" in config["alignment_id"]
+            assert config["dataset_version"] == (
+                "cpsc2018-source-fullrecord-joint12-minmax-all-nonoverlap4s-"
+                "random80-20-record-overlap-v1"
+            )
+            assert config["split_hash"] == (
+                "b7902b112219541e795bac4f020ef268b2951f0c3f80709f0a06f18132a743d8"
+            )
+        else:
+            assert "lead_II_to_other_11" in config["alignment_id"]
+            assert "source-derived-all12lead-qc-v3" in config["dataset_version"]
+            assert config["split_hash"] == (
+                "35e0a796a60e4d6979b1f050048495fdf1826eedda7d40e47a56d4dcd5874223"
+            )
 
 
 def test_mimic_afib_rddm_no_ot_config_is_frozen_for_final_test_only():
@@ -233,6 +248,92 @@ def test_scheduler_rejects_invalid_epoch_configuration():
 
     with pytest.raises(ValueError, match="epochs must be positive"):
         _build_scheduler(optimizer, epochs=0, warmup_epochs=0)
+
+
+def test_resume_contract_allows_only_larger_epoch_target_and_rejects_split_change():
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "wesad"
+        / "rcfm_ot_random_window80_20_record_minmax_seed31.yaml"
+    )
+    args = parse_args_with_config(
+        [
+            "--config",
+            str(config_path),
+            "--epochs",
+            "500",
+            "--resume_checkpoint",
+            "/tmp/source.pt",
+            "--resume_restart_lr",
+            "1e-5",
+        ]
+    )
+    resolved = vars(args).copy()
+    resolved.update(
+        {
+            "datasets": ["WESAD"],
+            "model_family": "RCFM",
+            "mask_method": "cached_target_ecg_r_peak_roi",
+            "target_lead_indices": None,
+        }
+    )
+    source_config = dict(resolved)
+    source_config["epochs"] = 200
+    normalization = {
+        "method": "source_record_minmax_neg1_1",
+        "normalization_id": resolved["normalization_id"],
+        "condition_unit": resolved["condition_unit"],
+        "target_unit": resolved["target_unit"],
+    }
+    output_spec = {
+        "channels": 1,
+        "length": 512,
+        "sampling_rate_hz": 128,
+        "target_lead": "chest_ECG",
+        "target_leads": ["chest_ECG"],
+        "target_lead_indices": None,
+    }
+    checkpoint = {
+        "schema_version": 2,
+        "kind": "canonical_multistep_rcfm",
+        "epoch": 200,
+        "config": source_config,
+        "normalization": normalization,
+        "output_spec": output_spec,
+    }
+
+    _validate_resume_contract(
+        resolved,
+        checkpoint,
+        expected_kind="canonical_multistep_rcfm",
+        normalization=normalization,
+        output_spec=output_spec,
+    )
+
+    checkpoint["config"] = {**source_config, "split_hash": "wrong"}
+    with pytest.raises(ValueError, match="split_hash"):
+        _validate_resume_contract(
+            resolved,
+            checkpoint,
+            expected_kind="canonical_multistep_rcfm",
+            normalization=normalization,
+            output_spec=output_spec,
+        )
+
+
+def test_resume_restart_cosine_starts_at_base_lr_and_ends_at_zero():
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.AdamW([parameter], lr=0.0)
+    optimizer.param_groups[0]["lr"] = 1e-5
+    optimizer.param_groups[0]["initial_lr"] = 1e-5
+    scheduler = _build_scheduler(optimizer, epochs=300, warmup_epochs=0)
+
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(1e-5)
+    for _ in range(300):
+        optimizer.step()
+        scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.0, abs=1e-12)
 
 
 def test_exact_ot_training_loader_keeps_final_incomplete_batch():

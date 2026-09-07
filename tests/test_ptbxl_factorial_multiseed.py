@@ -9,6 +9,7 @@ from scripts.analyze_ptbxl_factorial_multiseed import (
     _parse_prediction_specs,
 )
 from scripts.evaluate_ptbxl_flow_checkpoint import _validate_checkpoint
+from train_rddm_compare import parse_args_with_config as parse_rddm
 
 
 def _cfm_contract(seed: int):
@@ -59,6 +60,18 @@ def test_checkpoint_contract_accepts_explicit_training_seed_and_plain_cfm():
     _validate_checkpoint(cfm, "cfm", expected_training_seed=32)
     with pytest.raises(ValueError, match="seed"):
         _validate_checkpoint(cfm, "cfm", expected_training_seed=33)
+
+
+@pytest.mark.parametrize("seed", (32, 33))
+def test_ptbxl_rddm_additional_seed_contract(seed: int):
+    config = Path(__file__).resolve().parents[1] / "configs/ptbxl/rddm_adapted_record_minmax_neg1_1_seed31.yaml"
+    args = parse_rddm(["--config", str(config), "--seed", str(seed)])
+    assert args.datasets == "PTBXL"
+    assert args.seed == seed
+    assert args.nT == 10
+    assert args.expected_train_windows == 17440
+    assert args.expected_test_windows == 2193
+    assert args.reproduction_label == "RDDM-ECG (adapted)"
 
 
 def test_three_seed_exact_sign_flip_has_minimum_two_sided_resolution_quarter():

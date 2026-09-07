@@ -34,6 +34,11 @@ PTBXL_SPLIT_HASH = "7784c98a2c8daccc23fc7cb0d47dc1933eeee77f120c05f8a24ac149cd84
 CPSC2018_SPLIT_HASH = "35e0a796a60e4d6979b1f050048495fdf1826eedda7d40e47a56d4dcd5874223"
 WESAD_SPLIT_HASH = "0b90bffe7c3032243c803e534de3592618284d26792c2b612ce7af17a81a85cd"
 MMECG_SPLIT_HASH = "e26fc81121cfd3b0e457608e37a7aa496ac7c48a0e0e7583a465bd069cc9da9f"
+PTBXL_RANDOM_WINDOW_SPLIT_HASH = "9ba296dc33ef6f29f9368ae4d1dd61feceb9366100b7b4afbc8698ea7592012c"
+CPSC2018_RANDOM_WINDOW_SPLIT_HASH = "b7902b112219541e795bac4f020ef268b2951f0c3f80709f0a06f18132a743d8"
+MIMIC_RANDOM_WINDOW_SPLIT_HASH = "8b862a432969db8e13dd5cec18928f96486b983f6147fbc2ad2d8cfb4fc96232"
+WESAD_RANDOM_WINDOW_SPLIT_HASH = "ef5687b00e5cc3809a8ac3d6b95d05671ee18b37182e04fd7635fe6657a3906c"
+MMECG_RANDOM_WINDOW_SPLIT_HASH = "6e5365be9b71c3815907eeabab2ee6b83a11a280521243a1f79c4f90da570dc2"
 PTBXL_TARGETS = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 
 
@@ -115,7 +120,82 @@ def _dilations(value: str | list[int]) -> tuple[int, ...]:
 def validate_config(args: argparse.Namespace) -> None:
     datasets = parse_datasets(args.datasets or "")
     targets = parse_lead_indices(args.target_lead_indices)
-    if args.task == "ppg2ecg" and datasets == ["MIMIC-AFib"]:
+    if (
+        args.task == "ecg2ecg"
+        and datasets == ["PTBXL"]
+        and args.dataset_version
+        == "ptbxl-1.0.1-random-window80-20-record-overlap-source-record-joint12-full10s-minmax-neg1-1-v2"
+    ):
+        expected = {
+            "split_hash": PTBXL_RANDOM_WINDOW_SPLIT_HASH,
+            "normalization_id": "source_record_joint12_minmax_neg1_1_v1",
+            "alignment_id": "ptbxl_all_records_two_nonoverlap_4s_windows_random80_20_seed31_lead_II_to_other11_v1",
+            "heldout_split": "val", "heldout_role": "validation",
+            "expected_train_windows": 34939, "expected_heldout_windows": 8735,
+        }
+        if args.condition_lead_index != 1 or targets != PTBXL_TARGETS:
+            raise ValueError("PTB-XL random-window direct CNN requires lead II to the other 11 leads")
+    elif (
+        args.task == "ecg2ecg"
+        and datasets == ["CPSC2018"]
+        and args.dataset_version
+        == "cpsc2018-source-fullrecord-joint12-minmax-all-nonoverlap4s-random80-20-record-overlap-v1"
+    ):
+        expected = {
+            "split_hash": CPSC2018_RANDOM_WINDOW_SPLIT_HASH,
+            "normalization_id": "source_record_joint12_minmax_neg1_1_v1",
+            "alignment_id": "cpsc2018_all_complete_nonoverlap_4s_windows_random80_20_seed31_lead_II_to_other11_v1",
+            "heldout_split": "val", "heldout_role": "validation",
+            "expected_train_windows": 19364, "expected_heldout_windows": 4842,
+        }
+        if args.condition_lead_index != 1 or targets != PTBXL_TARGETS:
+            raise ValueError("CPSC2018 random-window direct CNN requires lead II to the other 11 leads")
+    elif (
+        args.task == "ppg2ecg"
+        and datasets == ["MIMIC-AFib"]
+        and args.dataset_version
+        == "mimic-afib-all-qc-windows-random80-20-subject-record-overlap-rddm-window-minmax-v1"
+    ):
+        expected = {
+            "split_hash": MIMIC_RANDOM_WINDOW_SPLIT_HASH,
+            "normalization_id": "rddm_window_minmax_neg1_1_v1",
+            "alignment_id": "paired_source_row_no_phase_correction_random80_20_v1",
+            "heldout_split": "test", "heldout_role": "validation",
+            "expected_train_windows": 8160, "expected_heldout_windows": 2040,
+        }
+        if args.condition_lead_index is not None or targets is not None:
+            raise ValueError("MIMIC random-window direct CNN must not declare ECG lead indices")
+    elif (
+        args.task == "ppg2ecg"
+        and datasets == ["WESAD"]
+        and args.dataset_version
+        == "wesad-all-windows-random80-20-subject-overlap-linear-resample-source-record-minmax-v2"
+    ):
+        expected = {
+            "split_hash": WESAD_RANDOM_WINDOW_SPLIT_HASH,
+            "normalization_id": "source_record_minmax_neg1_1_v1",
+            "alignment_id": "native_common_start_same_window_no_delay_correction_random80_20_v1",
+            "heldout_split": "test", "heldout_role": "validation",
+            "expected_train_windows": 17365, "expected_heldout_windows": 4342,
+        }
+        if args.condition_lead_index is not None or targets is not None:
+            raise ValueError("WESAD random-window direct CNN must not declare ECG lead indices")
+    elif (
+        args.task == "rcg2ecg"
+        and datasets == ["mmECG"]
+        and args.dataset_version
+        == "mmecg-all-windows-random80-20-subject-record-overlap-window-minmax-v1"
+    ):
+        expected = {
+            "split_hash": MMECG_RANDOM_WINDOW_SPLIT_HASH,
+            "normalization_id": "window_minmax_neg1_1_v1",
+            "alignment_id": "same_record_same_window_no_delay_correction_random80_20_v1",
+            "heldout_split": "test", "heldout_role": "validation",
+            "expected_train_windows": 9973, "expected_heldout_windows": 2494,
+        }
+        if args.condition_lead_index is not None or targets is not None:
+            raise ValueError("mmECG random-window direct CNN must not declare ECG lead indices")
+    elif args.task == "ppg2ecg" and datasets == ["MIMIC-AFib"]:
         expected = {
             "dataset_version": "mimic-afib-rddm-upstream-all-zero-ppg-qc-v1",
             "split_hash": MIMIC_SPLIT_HASH,

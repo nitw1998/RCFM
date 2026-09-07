@@ -106,71 +106,174 @@ def validate_config(args: argparse.Namespace) -> None:
         if args.normalization_id != "rddm_window_minmax_neg1_1_v1":
             raise ValueError("MIMIC RDDM requires the frozen RDDM window normalization")
         if args.heldout_split != "test":
-            raise ValueError("MIMIC RDDM requires the frozen upstream test split")
+            raise ValueError("MIMIC RDDM requires the artifact's frozen test-named split")
         if args.condition_lead_index is not None or targets is not None:
             raise ValueError("MIMIC PPG-to-ECG must not declare ECG lead indices")
         if args.reproduction_label != "RDDM (reproduced)":
             raise ValueError("MIMIC RDDM must retain the reproduction label")
+        protocols = {
+            "mimic-afib-rddm-upstream-all-zero-ppg-qc-v1": (
+                "a7e388293adaa7b48d3493efc505dd8750520730cae9fd7649157866efa86a51",
+                "paired_array_row_rddm_contract_zero_ppg_qc_v1",
+                8400,
+                1800,
+            ),
+            "mimic-afib-all-qc-windows-random80-20-subject-record-overlap-rddm-window-minmax-v1": (
+                "8b862a432969db8e13dd5cec18928f96486b983f6147fbc2ad2d8cfb4fc96232",
+                "paired_source_row_no_phase_correction_random80_20_v1",
+                8160,
+                2040,
+            ),
+        }
+        expected = protocols.get(args.dataset_version)
+        if expected is None or (
+            args.split_hash,
+            args.alignment_id,
+            args.expected_train_windows,
+            args.expected_test_windows,
+        ) != expected:
+            raise ValueError("MIMIC RDDM provenance or window counts do not match a frozen protocol")
     elif args.task == "ecg2ecg" and datasets == ["PTBXL"]:
         expected_targets = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-        if args.normalization_id != "record_minmax_neg1_1_v1":
-            raise ValueError("PTB-XL RDDM requires per-record/per-lead min-max normalization")
         if args.heldout_split != "val":
-            raise ValueError("PTB-XL training must use official fold 9 as validation")
+            raise ValueError("PTB-XL RDDM requires a validation-named held-out split")
         if args.condition_lead_index != 1 or targets != expected_targets:
             raise ValueError("PTB-XL RDDM requires Lead II to the other 11 leads")
-        if args.expected_train_windows != 17440 or args.expected_test_windows != 2193:
-            raise ValueError("PTB-XL RDDM requires the frozen 17440/2193 train/validation rows")
-        if args.reproduction_label != "RDDM-ECG (adapted)":
-            raise ValueError("PTB-XL must be labelled RDDM-ECG (adapted)")
+        protocols = {
+            "ptbxl-1.0.1-official-folds-record-minmax-neg1-1-v1": (
+                "7784c98a2c8daccc23fc7cb0d47dc1933eeee77f120c05f8a24ac149cd8474f7",
+                "record_minmax_neg1_1_v1",
+                "ptbxl_official_folds_first4s_same_record_lead_II_to_other11_v1",
+                17440,
+                2193,
+                "RDDM-ECG (adapted)",
+            ),
+            "ptbxl-1.0.1-random-window80-20-record-overlap-source-record-joint12-full10s-minmax-neg1-1-v2": (
+                "9ba296dc33ef6f29f9368ae4d1dd61feceb9366100b7b4afbc8698ea7592012c",
+                "source_record_joint12_minmax_neg1_1_v1",
+                "ptbxl_all_records_two_nonoverlap_4s_windows_random80_20_seed31_lead_II_to_other11_v1",
+                34939,
+                8735,
+                "RDDM-ECG (random-window adapted)",
+            ),
+        }
+        expected = protocols.get(args.dataset_version)
+        if expected is None or (
+            args.split_hash,
+            args.normalization_id,
+            args.alignment_id,
+            args.expected_train_windows,
+            args.expected_test_windows,
+            args.reproduction_label,
+        ) != expected:
+            raise ValueError("PTB-XL RDDM provenance, counts, normalization, or label are invalid")
     elif args.task == "ecg2ecg" and datasets == ["CPSC2018"]:
         expected_targets = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-        if args.dataset_version != (
-            "cpsc2018-source-derived-all12lead-qc-v3-record-minmax-neg1-1"
-        ):
-            raise ValueError("CPSC2018 RDDM requires the frozen QC-v3 dataset")
-        if args.split_hash != (
-            "35e0a796a60e4d6979b1f050048495fdf1826eedda7d40e47a56d4dcd5874223"
-        ):
-            raise ValueError("CPSC2018 RDDM requires the frozen record split")
-        if args.normalization_id != "record_minmax_neg1_1_v1":
-            raise ValueError(
-                "CPSC2018 RDDM requires per-record/per-lead min-max normalization"
-            )
-        if args.alignment_id != (
-            "same_record_simultaneous_channels_first_4s_lead_II_to_other_11_v3"
-        ):
-            raise ValueError("CPSC2018 RDDM requires the frozen simultaneous-lead alignment")
         if args.heldout_split != "val":
-            raise ValueError("CPSC2018 training must use the frozen validation split")
+            raise ValueError("CPSC2018 RDDM requires a validation-named held-out split")
         if args.condition_lead_index != 1 or targets != expected_targets:
             raise ValueError("CPSC2018 RDDM requires Lead II to the other 11 leads")
-        if args.expected_train_windows != 5487 or args.expected_test_windows != 686:
-            raise ValueError("CPSC2018 RDDM requires the frozen 5487/686 train/validation rows")
-        if args.reproduction_label != "RDDM-ECG (adapted)":
-            raise ValueError("CPSC2018 must be labelled RDDM-ECG (adapted)")
+        protocols = {
+            "cpsc2018-source-derived-all12lead-qc-v3-record-minmax-neg1-1": (
+                "35e0a796a60e4d6979b1f050048495fdf1826eedda7d40e47a56d4dcd5874223",
+                "record_minmax_neg1_1_v1",
+                "same_record_simultaneous_channels_first_4s_lead_II_to_other_11_v3",
+                5487,
+                686,
+                "RDDM-ECG (adapted)",
+            ),
+            "cpsc2018-source-fullrecord-joint12-minmax-all-nonoverlap4s-random80-20-record-overlap-v1": (
+                "b7902b112219541e795bac4f020ef268b2951f0c3f80709f0a06f18132a743d8",
+                "source_record_joint12_minmax_neg1_1_v1",
+                "cpsc2018_all_complete_nonoverlap_4s_windows_random80_20_seed31_lead_II_to_other11_v1",
+                19364,
+                4842,
+                "RDDM-ECG (random-window adapted)",
+            ),
+        }
+        expected = protocols.get(args.dataset_version)
+        if expected is None or (
+            args.split_hash,
+            args.normalization_id,
+            args.alignment_id,
+            args.expected_train_windows,
+            args.expected_test_windows,
+            args.reproduction_label,
+        ) != expected:
+            raise ValueError("CPSC2018 RDDM provenance, counts, normalization, or label are invalid")
     elif args.task == "rcg2ecg" and datasets == ["mmECG"]:
         if args.normalization_id != "window_minmax_neg1_1_v1":
             raise ValueError("mmECG RDDM requires the frozen window min-max normalization")
         if args.heldout_split != "test":
-            raise ValueError("mmECG RDDM requires the frozen subject-held-out test split")
+            raise ValueError("mmECG RDDM requires the artifact's frozen test-named split")
         if args.condition_lead_index is not None or targets is not None:
             raise ValueError("mmECG RCG-to-ECG must not declare ECG lead indices")
-        if args.expected_train_windows != 9590 or args.expected_test_windows != 2877:
-            raise ValueError("mmECG RDDM requires the frozen 9590/2877 subject split")
-        if args.reproduction_label != "RDDM-RCG (adapted)":
-            raise ValueError("mmECG must be labelled RDDM-RCG (adapted)")
+        protocols = {
+            "mmecg-public-20221108-subject-split-window-minmax-v1": (
+                "e26fc81121cfd3b0e457608e37a7aa496ac7c48a0e0e7583a465bd069cc9da9f",
+                "same_record_same_window_no_additional_phase_correction_subject_split_v1",
+                9590,
+                2877,
+                "RDDM-RCG (adapted)",
+            ),
+            "mmecg-all-windows-random80-20-subject-record-overlap-window-minmax-v1": (
+                "6e5365be9b71c3815907eeabab2ee6b83a11a280521243a1f79c4f90da570dc2",
+                "same_record_same_window_no_delay_correction_random80_20_v1",
+                9973,
+                2494,
+                "RDDM-RCG (random-window adapted)",
+            ),
+        }
+        expected = protocols.get(args.dataset_version)
+        if expected is None or (
+            args.split_hash,
+            args.alignment_id,
+            args.expected_train_windows,
+            args.expected_test_windows,
+            args.reproduction_label,
+        ) != expected:
+            raise ValueError("mmECG RDDM provenance, counts, or adaptation label are invalid")
     elif args.task == "ppg2ecg" and datasets == ["WESAD"]:
-        if args.normalization_id != "window_minmax_neg1_1_v1":
-            raise ValueError("WESAD RDDM requires the frozen window min-max normalization")
         if args.heldout_split != "test":
-            raise ValueError("WESAD RDDM requires the frozen subject-held-out test split")
+            raise ValueError("WESAD RDDM requires the artifact's frozen test-named split")
         if args.condition_lead_index is not None or targets is not None:
             raise ValueError("WESAD PPG-to-ECG must not declare ECG lead indices")
-        if args.expected_train_windows != 17494 or args.expected_test_windows != 4213:
-            raise ValueError("WESAD RDDM requires the frozen 17494/4213 subject split")
-        if args.reproduction_label != "RDDM-PPG (matched-protocol reproduction)":
-            raise ValueError("WESAD must retain the matched-protocol reproduction label")
+        protocols = {
+            "wesad-subject-fold1-linear-resample-window-minmax-v1": (
+                "0b90bffe7c3032243c803e534de3592618284d26792c2b612ce7af17a81a85cd",
+                "window_minmax_neg1_1_v1",
+                "native_common_start_same_window_no_delay_correction_subject_fold1_v1",
+                17494,
+                4213,
+                "RDDM-PPG (matched-protocol reproduction)",
+            ),
+            "wesad-all-windows-random80-20-subject-overlap-linear-resample-source-record-minmax-v2": (
+                "ef5687b00e5cc3809a8ac3d6b95d05671ee18b37182e04fd7635fe6657a3906c",
+                "source_record_minmax_neg1_1_v1",
+                "native_common_start_same_window_no_delay_correction_random80_20_v1",
+                17365,
+                4342,
+                "RDDM-PPG (random-window record-minmax adaptation)",
+            ),
+            "wesad-subject-fold1-train-fixed-lag-aligned-v2": (
+                "0b90bffe7c3032243c803e534de3592618284d26792c2b612ce7af17a81a85cd",
+                "window_minmax_neg1_1_v1",
+                "train_subjects_peak_median_fixed_lag_crop_before_window_subject_fold1_v2",
+                17494,
+                4213,
+                "RDDM-PPG (matched-protocol reproduction)",
+            ),
+        }
+        expected = protocols.get(args.dataset_version)
+        if expected is None or (
+            args.split_hash,
+            args.normalization_id,
+            args.alignment_id,
+            args.expected_train_windows,
+            args.expected_test_windows,
+            args.reproduction_label,
+        ) != expected:
+            raise ValueError("WESAD RDDM provenance, counts, normalization, or label are invalid")
     else:
         raise ValueError(
             "RDDM comparator supports only frozen MIMIC PPG-to-ECG, "
@@ -290,6 +393,11 @@ def train(args: argparse.Namespace) -> Path:
     scheduler = CosineAnnealingLR(optimizer, T_max=args.scheduler_t_max)
 
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    random_window_protocol = "random80-20" in args.dataset_version
+    reproduction_labels = {
+        "RDDM (reproduced)",
+        "RDDM-PPG (matched-protocol reproduction)",
+    }
     resolved = vars(args).copy()
     resolved.update(
         {
@@ -301,13 +409,15 @@ def train(args: argparse.Namespace) -> Path:
             "model_family": "RDDM",
             "comparison_role": (
                 "independent_upstream_paper_reproduction"
-                if args.task == "ppg2ecg"
-                else "conditional_multilead_ecg_adaptation"
+                if args.reproduction_label in reproduction_labels
+                else "conditional_modality_adaptation"
             ),
             "checkpoint_epochs": checkpoint_epochs(args.epochs, args.save_every),
             "model_parameter_count": sum(p.numel() for p in parameters if p.requires_grad),
             "heldout_role": (
-                "upstream_test_not_evaluated_during_training"
+                "random_window_validation_not_evaluated_during_training"
+                if random_window_protocol
+                else "upstream_test_not_evaluated_during_training"
                 if args.heldout_split == "test"
                 else "official_fold9_validation_not_evaluated_during_training"
             ),

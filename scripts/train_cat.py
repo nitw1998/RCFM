@@ -70,6 +70,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--heldout_role", default="upstream_test_final_only")
     parser.add_argument("--reproduction_label", default="CAT-PPG (reproduced)")
     parser.add_argument("--cycle_source", default="source_ppg_fft_only")
+    parser.add_argument("--ecg_adapter_version", default="not_applicable")
     parser.add_argument("--nfe", type=int, default=1)
     parser.add_argument("--cat_layers", type=int, default=2)
     parser.add_argument("--top_k", type=int, default=2)
@@ -122,7 +123,8 @@ def parse_args_with_config(argv: list[str] | None = None) -> argparse.Namespace:
 
 def validate_config(args: argparse.Namespace) -> None:
     common = {"window_size": 4, "sampling_rate": 128, "nfe": 1,
-              "cat_layers": 2, "top_k": 2, "encoder_layers": 4}
+              "cat_layers": 2, "top_k": 2, "encoder_layers": 4,
+              "ecg_adapter_version": "not_applicable"}
     protocols = {
         ("ppg2ecg", "MIMIC-AFib"): {
             "dataset_version": MIMIC_DATASET_VERSION, "split_hash": MIMIC_SPLIT_HASH,
@@ -159,6 +161,7 @@ def validate_config(args: argparse.Namespace) -> None:
             "heldout_split": "val", "heldout_role": "validation_endpoint_only",
             "reproduction_label": "CAT-ECG (adapted)",
             "cycle_source": "source_ecg_lead_II_fft_only", "output_channels": 11,
+            "ecg_adapter_version": "shared_first_lead_specific_second_cat_v2",
         },
         ("ecg2ecg", "CPSC2018"): {
             "dataset_version": "cpsc2018-source-derived-all12lead-qc-v3-record-minmax-neg1-1",
@@ -168,6 +171,7 @@ def validate_config(args: argparse.Namespace) -> None:
             "heldout_split": "val", "heldout_role": "validation_endpoint_only",
             "reproduction_label": "CAT-ECG (adapted)",
             "cycle_source": "source_ecg_lead_II_fft_only", "output_channels": 11,
+            "ecg_adapter_version": "shared_first_lead_specific_second_cat_v2",
         },
     }
     protocol = protocols.get((args.task, args.datasets))
@@ -256,6 +260,11 @@ def _validate_resume_contract(
     mismatched = [
         field for field in RESUME_MATCH_FIELDS if saved.get(field) != getattr(args, field)
     ]
+    if (
+        args.reproduction_label == "CAT-ECG (adapted)"
+        and saved.get("ecg_adapter_version") != args.ecg_adapter_version
+    ):
+        mismatched.append("ecg_adapter_version")
     if mismatched:
         raise ValueError("CAT resume checkpoint differs on: " + ", ".join(mismatched))
     if int(checkpoint["epoch"]) >= args.epochs:

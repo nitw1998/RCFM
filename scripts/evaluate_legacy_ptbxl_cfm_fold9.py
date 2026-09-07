@@ -32,7 +32,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--historical-root", type=Path, default=REPO / "data/PTBXL")
     parser.add_argument("--official-root", type=Path, default=REPO.parent / "runs/preprocessing/ptbxl_official_minmax_v1/PTBXL")
     parser.add_argument("--checkpoint-root", type=Path, default=REPO / "saved/PTBXL")
-    parser.add_argument("--split-source", choices=("historical_val", "official_fold9"), default="historical_val")
+    parser.add_argument(
+        "--split-source",
+        choices=("historical_val", "official_fold9", "official_fold10"),
+        default="historical_val",
+    )
     parser.add_argument("--epochs", type=int, nargs="+", default=(979, 999))
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--legacy-fd-batch-sizes", type=int, nargs="+", default=(64, 256))
@@ -60,11 +64,20 @@ def _minmax_per_record(values: np.ndarray) -> np.ndarray:
     return (2.0 * (values - low) / span - 1.0).astype(np.float32)
 
 
-def load_data(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, dict[str, object], Path]:
+def load_data(
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, object], Path]:
     heldout_root = args.historical_root if args.split_source == "historical_val" else args.official_root
-    heldout_path = heldout_root / "X_val_resampled.npy"
+    split = "test" if args.split_source == "official_fold10" else "val"
+    heldout_path = heldout_root / f"X_{split}_resampled.npy"
     heldout = np.load(heldout_path, mmap_mode="r")
     count = len(heldout) if args.max_records is None else min(args.max_records, len(heldout))
+    if args.split_source == "historical_val":
+        subject_ids = np.arange(count, dtype=np.int64)
+    else:
+        subject_ids = np.asarray(
+            np.load(heldout_root / f"patient_ids_{split}.npy", allow_pickle=False)[:count]
+        )
     stats = {
         "method": "per_record_per_selected_lead_minmax_neg1_1",
         "source_commit": "c366eee",
@@ -72,7 +85,7 @@ def load_data(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, dict[st
     }
     target = _minmax_per_record(heldout[:count, :512, 10])
     source = _minmax_per_record(heldout[:count, :512, 2])
-    return target[:, None], source[:, None], stats, heldout_path
+    return target[:, None], source[:, None], subject_ids, stats, heldout_path
 
 
 def legacy_batch_fd(target: np.ndarray, prediction: np.ndarray, batch_size: int) -> float:
@@ -113,12 +126,23 @@ def main() -> None:
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(args.seed)
     torch.backends.cudnn.deterministic = True; torch.backends.cudnn.benchmark = False
     args.output.mkdir(parents=True, exist_ok=False)
-    target, source, stats, heldout_path = load_data(args)
+    target, source, subject_ids, stats, heldout_path = load_data(args)
     noise = np.random.default_rng(args.seed).standard_normal(target.shape, dtype=np.float32)
-    np.savez_compressed(args.output / "paired_reference.npz", targets=target, conditions=source, initial_noise=noise)
+    np.savez_compressed(
+        args.output / "paired_reference.npz",
+        targets=target,
+        conditions=source,
+        initial_noise=noise,
+        subject_ids=subject_ids,
+    )
+    split_caveats = {
+        "historical_val": "historical_val provenance cannot be independently matched to the current official fold9",
+        "official_fold9": "reserved official validation fold; not used for final test claims",
+        "official_fold10": "final official test fold; never loaded during training",
+    }
     summary = {
         "protocol": "legacy_ptbxl_single_lead_cfm_v1", "split_source": args.split_source,
-        "split_caveat": "historical_val provenance cannot be independently matched to the current official fold9" if args.split_source == "historical_val" else "cross-artifact sensitivity using historical training scaler",
+        "split_caveat": split_caveats[args.split_source],
         "records": len(target), "condition_lead": "III", "target_lead": "V5", "samples": 512,
         "normalization": "checkpoint-era per-record per-selected-lead min-max to [-1,1]",
         "normalization_provenance": stats, "seed": args.seed, "sampling_steps": 50,

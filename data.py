@@ -169,6 +169,29 @@ def _window_minmax_neg1_1_metadata(
     return expected
 
 
+def _source_record_minmax_neg1_1_metadata(
+    metadata: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Describe reversible scaling fixed over each continuous source record."""
+
+    expected = {
+        "method": "source_record_minmax_neg1_1",
+        "stats_scope": "per_source_continuous_record_per_modality",
+        "stats_source": "dataset_sidecars_computed_before_window_split",
+        "feature_range": [-1.0, 1.0],
+        "inverse_transform": "x=(x_scaled+1)*source_record_range/2+source_record_min",
+        "generated_inverse_policy": "ground_truth_target_scaler_is_oracle_only",
+        "cross_modality_scaler_shared": False,
+    }
+    if metadata is not None:
+        mismatched = [key for key, value in expected.items() if metadata.get(key) != value]
+        if mismatched:
+            raise ValueError(
+                f"invalid source-record min-max metadata fields: {mismatched}"
+            )
+    return expected
+
+
 def _record_zscore(
     signals: np.ndarray,
     means: np.ndarray,
@@ -255,6 +278,70 @@ def _record_minmax_neg1_1_metadata(
         if mismatched:
             raise ValueError(f"invalid record_minmax_neg1_1 metadata fields: {mismatched}")
     return expected
+
+
+def _record_joint12_minmax_neg1_1_metadata(
+    metadata: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    expected = {
+        "method": "record_joint12_minmax_neg1_1",
+        "stats_scope": "per_record_shared_all_12_leads",
+        "stats_source": "dataset_sidecar_fixed_first_model_window",
+        "feature_range": [-1.0, 1.0],
+        "inverse_transform": "x=(x_scaled+1)*record_joint_range/2+record_joint_min",
+        "preserves_interlead_relative_amplitudes_and_offsets": True,
+        "heldout_target_statistics_used": True,
+        "deployment_scope": "paired_benchmark_only_not_lead_II_only_inference",
+        "generated_inverse_policy": "ground_truth_joint_12lead_scaler_is_oracle_only",
+    }
+    if metadata is not None:
+        mismatched = [key for key, value in expected.items() if metadata.get(key) != value]
+        if mismatched:
+            raise ValueError(f"invalid record_joint12_minmax metadata fields: {mismatched}")
+    return expected
+
+
+def _source_record_joint12_minmax_neg1_1_metadata(
+    metadata: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    expected = {
+        "method": "source_record_joint12_minmax_neg1_1",
+        "stats_scope": "per_source_record_shared_full_10s_all_12_leads",
+        "stats_source": "dataset_sidecar_full_source_record",
+        "feature_range": [-1.0, 1.0],
+        "inverse_transform": "x=(x_scaled+1)*source_record_joint_range/2+source_record_joint_min",
+        "preserves_interlead_relative_amplitudes_and_offsets": True,
+        "preserves_within_record_interwindow_scale": True,
+        "heldout_target_statistics_used": True,
+        "deployment_scope": "paired_benchmark_only_not_lead_II_only_inference",
+        "generated_inverse_policy": "ground_truth_full_record_joint_12lead_scaler_is_oracle_only",
+    }
+    if metadata is not None:
+        mismatched = [key for key, value in expected.items() if metadata.get(key) != value]
+        if mismatched:
+            raise ValueError(f"invalid source-record joint12 minmax metadata fields: {mismatched}")
+    return expected
+
+
+def _load_record_joint12_coefficients(
+    dataset_root: Path, split: str, expected_records: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ids_path = dataset_root / f"record_ids_{split}.npy"
+    minima_path = dataset_root / f"record_joint_minima_{split}.npy"
+    ranges_path = dataset_root / f"record_joint_ranges_{split}.npy"
+    missing = [path.name for path in (ids_path, minima_path, ranges_path) if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"joint12 min-max normalization requires sidecars: {missing}")
+    record_ids = np.load(ids_path, allow_pickle=False).reshape(-1)
+    minima = np.asarray(np.load(minima_path, allow_pickle=False), dtype=np.float32).reshape(-1)
+    ranges = np.asarray(np.load(ranges_path, allow_pickle=False), dtype=np.float32).reshape(-1)
+    if len(record_ids) != expected_records or minima.shape != (expected_records,):
+        raise ValueError("joint 12-lead min-max IDs/minima do not align with waveform split")
+    if ranges.shape != minima.shape or not np.all(np.isfinite(minima)):
+        raise ValueError("joint 12-lead min-max coefficients do not align")
+    if not np.all(np.isfinite(ranges)) or np.any(ranges <= 0):
+        raise ValueError("joint 12-lead min-max ranges must be finite and positive")
+    return record_ids.astype(str), minima, ranges
 
 
 def _load_record_ids(dataset_root: Path, split: str, expected_records: int) -> np.ndarray:
@@ -502,6 +589,11 @@ def get_ppg2ecg_datasets(
     samples = SAMPLE_RATE * window_size
     root = Path(DATA_PATH)
     train_ecg, train_condition, test_ecg, test_condition = [], [], [], []
+    train_target_minima, train_target_ranges = [], []
+    train_condition_minima, train_condition_ranges = [], []
+    test_target_minima, test_target_ranges = [], []
+    test_condition_minima, test_condition_ranges = [], []
+    train_source_record_ids, test_source_record_ids = [], []
 
     for dataset in datasets:
         dataset_root = root / dataset
@@ -510,9 +602,110 @@ def get_ppg2ecg_datasets(
             train_condition.append(_as_2d_windows(np.load(dataset_root / f"ppg_train_{window_size}sec.npy"), samples))
         test_ecg.append(_as_2d_windows(np.load(dataset_root / f"ecg_test_{window_size}sec.npy"), samples))
         test_condition.append(_as_2d_windows(np.load(dataset_root / f"ppg_test_{window_size}sec.npy"), samples))
+        if normalization_id == "source_record_minmax_neg1_1_v1":
+            if load_train:
+                train_source_record_ids.append(
+                    np.load(dataset_root / "subject_ids_train.npy")
+                )
+                train_target_minima.append(
+                    np.load(dataset_root / "target_record_minima_train.npy")
+                )
+                train_target_ranges.append(
+                    np.load(dataset_root / "target_record_ranges_train.npy")
+                )
+                train_condition_minima.append(
+                    np.load(dataset_root / "condition_record_minima_train.npy")
+                )
+                train_condition_ranges.append(
+                    np.load(dataset_root / "condition_record_ranges_train.npy")
+                )
+            test_target_minima.append(
+                np.load(dataset_root / "target_record_minima_test.npy")
+            )
+            test_source_record_ids.append(
+                np.load(dataset_root / "subject_ids_test.npy")
+            )
+            test_target_ranges.append(
+                np.load(dataset_root / "target_record_ranges_test.npy")
+            )
+            test_condition_minima.append(
+                np.load(dataset_root / "condition_record_minima_test.npy")
+            )
+            test_condition_ranges.append(
+                np.load(dataset_root / "condition_record_ranges_test.npy")
+            )
 
     concatenated_test_target = np.concatenate(test_ecg)
     concatenated_test_source = np.concatenate(test_condition)
+    if normalization_id == "source_record_minmax_neg1_1_v1":
+        fitted_metadata = _source_record_minmax_neg1_1_metadata(normalization_metadata)
+        test_target = _record_minmax_neg1_1(
+            concatenated_test_target,
+            np.concatenate(test_target_minima),
+            np.concatenate(test_target_ranges),
+        )
+        test_source = _record_minmax_neg1_1(
+            concatenated_test_source,
+            np.concatenate(test_condition_minima),
+            np.concatenate(test_condition_ranges),
+        )
+        if load_train:
+            train_record_kwargs = {
+                "record_ids": np.concatenate(train_source_record_ids),
+                "target_offsets": np.concatenate(train_target_minima),
+                "target_scales": np.concatenate(train_target_ranges),
+                "condition_offsets": np.concatenate(train_condition_minima),
+                "condition_scales": np.concatenate(train_condition_ranges),
+            }
+            train_target = _record_minmax_neg1_1(
+                np.concatenate(train_ecg),
+                train_record_kwargs["target_offsets"],
+                train_record_kwargs["target_scales"],
+            )
+            train_source = _record_minmax_neg1_1(
+                np.concatenate(train_condition),
+                train_record_kwargs["condition_offsets"],
+                train_record_kwargs["condition_scales"],
+            )
+            train_masks = region_masks_train
+            if max_train_records is not None:
+                train_target = train_target[:max_train_records]
+                train_source = train_source[:max_train_records]
+                train_record_kwargs = {
+                    key: values[:max_train_records]
+                    for key, values in train_record_kwargs.items()
+                }
+                if train_masks is not None:
+                    train_masks = train_masks[:max_train_records]
+            train_set = PairedSignalDataset(
+                train_target,
+                train_source,
+                clean_target=False,
+                clean_condition_ppg=clean_condition_ppg,
+                normalization_metadata=fitted_metadata,
+                return_region_mask=return_region_mask_train,
+                cached_region_masks=train_masks,
+                **train_record_kwargs,
+            )
+        else:
+            train_set = None
+        if max_heldout_records is not None:
+            test_target = test_target[:max_heldout_records]
+            test_source = test_source[:max_heldout_records]
+        test_set = PairedSignalDataset(
+            test_target,
+            test_source,
+            clean_target=False,
+            clean_condition_ppg=clean_condition_ppg,
+            normalization_metadata=fitted_metadata,
+            return_region_mask=False,
+            record_ids=np.concatenate(test_source_record_ids)[:max_heldout_records],
+            target_offsets=np.concatenate(test_target_minima)[:max_heldout_records],
+            target_scales=np.concatenate(test_target_ranges)[:max_heldout_records],
+            condition_offsets=np.concatenate(test_condition_minima)[:max_heldout_records],
+            condition_scales=np.concatenate(test_condition_ranges)[:max_heldout_records],
+        )
+        return train_set, test_set
     if normalization_id in {
         "rddm_window_minmax_neg1_1_v1",
         "window_minmax_neg1_1_v1",
@@ -652,6 +845,8 @@ def get_ecg2ecg_datasets(
         "training_global_zscore_v1",
         "record_zscore_v1",
         "record_minmax_neg1_1_v1",
+        "record_joint12_minmax_neg1_1_v1",
+        "source_record_joint12_minmax_neg1_1_v1",
     }:
         raise ValueError("unsupported ECG normalization_id")
     train_target, train_condition, test_target, test_condition = [], [], [], []
@@ -667,6 +862,12 @@ def get_ecg2ecg_datasets(
     heldout_target_scales: list[np.ndarray] = []
     train_minmax_record_ids: list[np.ndarray] = []
     heldout_minmax_record_ids: list[np.ndarray] = []
+    train_joint_record_ids: list[np.ndarray] = []
+    train_joint_offsets: list[np.ndarray] = []
+    train_joint_ranges: list[np.ndarray] = []
+    heldout_joint_record_ids: list[np.ndarray] = []
+    heldout_joint_offsets: list[np.ndarray] = []
+    heldout_joint_ranges: list[np.ndarray] = []
 
     for dataset in datasets:
         dataset_root = root / dataset
@@ -686,6 +887,16 @@ def get_ecg2ecg_datasets(
                 train_target_scales.append(target_scales)
             elif normalization_id == "record_minmax_neg1_1_v1":
                 train_minmax_record_ids.append(_load_record_ids(dataset_root, "train", len(train)))
+            elif normalization_id in {
+                "record_joint12_minmax_neg1_1_v1",
+                "source_record_joint12_minmax_neg1_1_v1",
+            }:
+                ids, offsets, ranges = _load_record_joint12_coefficients(
+                    dataset_root, "train", len(train)
+                )
+                train_joint_record_ids.append(ids)
+                train_joint_offsets.append(offsets)
+                train_joint_ranges.append(ranges)
         heldout_path = dataset_root / f"X_{heldout_split}_resampled.npy"
         if not heldout_path.exists():
             raise FileNotFoundError(
@@ -710,6 +921,16 @@ def get_ecg2ecg_datasets(
             heldout_minmax_record_ids.append(
                 _load_record_ids(dataset_root, heldout_split, len(test))
             )
+        elif normalization_id in {
+            "record_joint12_minmax_neg1_1_v1",
+            "source_record_joint12_minmax_neg1_1_v1",
+        }:
+            ids, offsets, ranges = _load_record_joint12_coefficients(
+                dataset_root, heldout_split, len(test)
+            )
+            heldout_joint_record_ids.append(ids)
+            heldout_joint_offsets.append(offsets)
+            heldout_joint_ranges.append(ranges)
 
     concatenated_test_target = np.concatenate(test_target)
     concatenated_test_source = np.concatenate(test_condition)
@@ -811,6 +1032,82 @@ def get_ecg2ecg_datasets(
                 "target_scales": train_target_ranges,
                 "condition_offsets": train_condition_offsets,
                 "condition_scales": train_condition_ranges,
+            }
+            if max_train_records is not None:
+                normalized_train_target = normalized_train_target[:max_train_records]
+                normalized_train_source = normalized_train_source[:max_train_records]
+                record_kwargs = {
+                    key: values[:max_train_records] for key, values in record_kwargs.items()
+                }
+            train_masks = region_masks_train
+            if train_masks is not None and max_train_records is not None:
+                train_masks = train_masks[:max_train_records]
+            train_set = PairedSignalDataset(
+                normalized_train_target,
+                normalized_train_source,
+                clean_target=False,
+                clean_condition_ppg=False,
+                normalization_metadata=fitted_metadata,
+                return_region_mask=return_region_mask_train,
+                cached_region_masks=train_masks,
+                **record_kwargs,
+            )
+        else:
+            train_set = None
+    elif normalization_id in {
+        "record_joint12_minmax_neg1_1_v1",
+        "source_record_joint12_minmax_neg1_1_v1",
+    }:
+        if normalization_id == "record_joint12_minmax_neg1_1_v1":
+            fitted_metadata = _record_joint12_minmax_neg1_1_metadata(normalization_metadata)
+        else:
+            fitted_metadata = _source_record_joint12_minmax_neg1_1_metadata(
+                normalization_metadata
+            )
+        heldout_offsets = np.concatenate(heldout_joint_offsets)
+        heldout_ranges = np.concatenate(heldout_joint_ranges)
+        heldout_target_offsets = np.broadcast_to(
+            heldout_offsets[:, None], concatenated_test_target.shape[:-1]
+        ).copy()
+        heldout_target_ranges = np.broadcast_to(
+            heldout_ranges[:, None], concatenated_test_target.shape[:-1]
+        ).copy()
+        normalized_test_target = _record_minmax_neg1_1(
+            concatenated_test_target, heldout_target_offsets, heldout_target_ranges
+        )
+        normalized_test_source = _record_minmax_neg1_1(
+            concatenated_test_source, heldout_offsets, heldout_ranges
+        )
+        heldout_record_kwargs = {
+            "record_ids": np.concatenate(heldout_joint_record_ids),
+            "target_offsets": heldout_target_offsets,
+            "target_scales": heldout_target_ranges,
+            "condition_offsets": heldout_offsets,
+            "condition_scales": heldout_ranges,
+        }
+        if load_train:
+            concatenated_train_target = np.concatenate(train_target)
+            concatenated_train_source = np.concatenate(train_condition)
+            train_offsets = np.concatenate(train_joint_offsets)
+            train_ranges = np.concatenate(train_joint_ranges)
+            train_target_offsets = np.broadcast_to(
+                train_offsets[:, None], concatenated_train_target.shape[:-1]
+            ).copy()
+            train_target_ranges = np.broadcast_to(
+                train_ranges[:, None], concatenated_train_target.shape[:-1]
+            ).copy()
+            normalized_train_target = _record_minmax_neg1_1(
+                concatenated_train_target, train_target_offsets, train_target_ranges
+            )
+            normalized_train_source = _record_minmax_neg1_1(
+                concatenated_train_source, train_offsets, train_ranges
+            )
+            record_kwargs = {
+                "record_ids": np.concatenate(train_joint_record_ids),
+                "target_offsets": train_target_offsets,
+                "target_scales": train_target_ranges,
+                "condition_offsets": train_offsets,
+                "condition_scales": train_ranges,
             }
             if max_train_records is not None:
                 normalized_train_target = normalized_train_target[:max_train_records]
