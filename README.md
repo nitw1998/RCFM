@@ -5,6 +5,21 @@ for Cross-Modal Physiological Signal Generation**. RCFM generates diagnostic ECG
 waveforms from heterogeneous source signals, including reduced-lead ECG, PPG,
 and radar cardiogram (RCG) signals.
 
+## Public release scope
+
+The public experiment configurations are restricted to **RCFM-OT**, defined as
+region-aware training (`region_weight > 0`) with minibatch optimal-transport
+coupling (`use_minibatch_ot: true`). Other baselines, unpublished variants,
+checkpoint fingerprints, and private review material are intentionally outside
+the public release. Dataset split hashes remain because they identify the
+published cohort partition without exposing patient data or model weights.
+
+Run the release guard before pushing:
+
+```bash
+python scripts/audit_public_release.py
+```
+
 The main paper draft is in:
 
 ```text
@@ -66,6 +81,18 @@ The historical mmECG preprocessing stores RCG windows using the `ppg_*` file
 names, so use `--task rcg2ecg --datasets mmECG`.
 
 ## Training
+
+Use one of the JSON-formatted YAML files under `configs/`. For example:
+
+```bash
+python train_rcfm.py \
+  --config configs/mimic_afib/rcfm_ot_random_window80_20_seed31.yaml \
+  --data_root /path/to/preprocessed-data \
+  --output_dir /path/to/run-output
+```
+
+The following direct CLI examples show the supported task shapes; enable both
+region weighting and minibatch OT when translating them into an experiment.
 
 PPG-to-ECG:
 
@@ -142,7 +169,8 @@ python train_rcfm.py \
   --max_batches 1 \
   --num_workers 0 \
   --device cpu \
-  --no-use_minibatch_ot \
+  --region_weight 0.01 \
+  --use_minibatch_ot \
   --output_dir /tmp/rcfm_smoke
 ```
 

@@ -173,6 +173,18 @@ plots/
 *.npy
 *.npz
 
+# Private/unpublished research must never enter the public repository.
+_private/
+private/
+research_private/
+configs/private/
+manuscript_private/
+review_private/
+*.pem
+*.key
+*.p12
+*.pfx
+
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
