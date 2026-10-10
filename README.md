@@ -20,10 +20,10 @@ Run the release guard before pushing:
 python scripts/audit_public_release.py
 ```
 
-The main paper draft is in:
+The main paper is in:
 
 ```text
-paper/Region-Aware Conditional Flow Matching for Cross-Modal Physiological Signal Generation.tex
+IEEE IOTJ 
 ```
 
 ## Method Components
